@@ -7,6 +7,11 @@ export type PropertyDocument = {
   type: string
   expiry: string
   size: string
+  // The original uploaded file, kept so a document can be opened and
+  // exported again later. Optional because older/seed records were
+  // metadata-only (no real file was ever attached to them).
+  fileName?: string
+  dataUrl?: string
 }
 
 export type RentMonth = {

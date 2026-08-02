@@ -10,8 +10,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useStore } from "@/components/store-provider"
 import { propertyImage, expiryState, StatPill } from "@/components/shared"
-import { money, type Property } from "@/lib/zameen-data"
-import { MapPin, FileText, Users, Trash2, Plus, CheckCircle2, Circle, Home } from "lucide-react"
+import { money, type Property, type PropertyDocument } from "@/lib/zameen-data"
+import { MapPin, FileText, Users, Trash2, Plus, CheckCircle2, Circle, Home, Download } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export function PropertyDetail({
@@ -85,25 +85,72 @@ function PropertyTabs({ property }: { property: Property }) {
   )
 }
 
+// Kept comfortably inside typical browser localStorage limits (this app's
+// whole state — properties, projects, everything — shares one ~5-10MB quota,
+// and a data-URL copy of a file runs about a third bigger than the file
+// itself).
+const MAX_DOCUMENT_SIZE = 4 * 1024 * 1024
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function downloadDocument(doc: PropertyDocument) {
+  if (!doc.dataUrl) return
+  const ext = doc.fileName?.match(/\.[^.]+$/)?.[0] ?? ""
+  const fileName = doc.name.toLowerCase().endsWith(ext.toLowerCase()) ? doc.name : `${doc.name}${ext}`
+  const a = document.createElement("a")
+  a.href = doc.dataUrl
+  a.download = fileName
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
 function DocumentsTab({ property }: { property: Property }) {
   const { addDocument, deleteDocument } = useStore()
   const [name, setName] = useState("")
   const [type, setType] = useState("")
   const [expiry, setExpiry] = useState("")
+  const [pendingFile, setPendingFile] = useState<{ dataUrl: string; fileName: string; size: string } | null>(null)
+  const [fileError, setFileError] = useState("")
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
-    if (file) {
-      setName(file.name.replace(/\.[^.]+$/, ""))
+    if (!file) return
+    setFileError("")
+    setPendingFile(null)
+    if (file.size > MAX_DOCUMENT_SIZE) {
+      setFileError(`"${file.name}" is too large — please choose a file under 4 MB.`)
+      e.target.value = ""
+      return
     }
+    setName(file.name.replace(/\.[^.]+$/, ""))
+    const reader = new FileReader()
+    reader.onload = () => {
+      setPendingFile({ dataUrl: reader.result as string, fileName: file.name, size: formatFileSize(file.size) })
+    }
+    reader.onerror = () => setFileError("Couldn't read that file — please try again.")
+    reader.readAsDataURL(file)
   }
 
   function add() {
     if (!name.trim()) return
-    addDocument(property.id, { name: name.trim(), type: type.trim() || "Document", expiry, size: "—" })
+    addDocument(property.id, {
+      name: name.trim(),
+      type: type.trim() || "Document",
+      expiry,
+      size: pendingFile?.size ?? "—",
+      fileName: pendingFile?.fileName,
+      dataUrl: pendingFile?.dataUrl,
+    })
     setName("")
     setType("")
     setExpiry("")
+    setPendingFile(null)
+    setFileError("")
   }
 
   return (
@@ -113,6 +160,12 @@ function DocumentsTab({ property }: { property: Property }) {
           <Plus className="size-4" /> Choose file to upload
           <input type="file" className="hidden" onChange={handleFile} />
         </label>
+        {pendingFile && (
+          <p className="mt-2 text-xs text-accent">
+            Attached: {pendingFile.fileName} ({pendingFile.size})
+          </p>
+        )}
+        {fileError && <p className="mt-2 text-xs text-destructive">{fileError}</p>}
         <div className="mt-3 flex flex-col gap-2">
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Document name" />
           <div className="grid grid-cols-2 gap-2">
@@ -130,17 +183,26 @@ function DocumentsTab({ property }: { property: Property }) {
       ) : (
         (property.documents ?? []).map((doc) => {
           const state = expiryState(doc.expiry)
+          const hasFile = Boolean(doc.dataUrl)
           return (
             <div key={doc.id} className="flex items-center gap-3 rounded-xl border border-border bg-card p-3">
-              <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <FileText className="size-4" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{doc.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {doc.type} · {doc.size}
-                </p>
-              </div>
+              <button
+                type="button"
+                onClick={() => hasFile && window.open(doc.dataUrl, "_blank", "noopener,noreferrer")}
+                disabled={!hasFile}
+                title={hasFile ? "Open document" : "No file attached to this record"}
+                className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:cursor-not-allowed"
+              >
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <FileText className="size-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{doc.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {doc.type} · {hasFile ? doc.size : "No file attached"}
+                  </p>
+                </div>
+              </button>
               <div className="flex flex-col items-end gap-1">
                 <Badge
                   variant="secondary"
@@ -153,10 +215,22 @@ function DocumentsTab({ property }: { property: Property }) {
                 >
                   {state.label}
                 </Badge>
-                <Button size="icon-xs" variant="ghost" onClick={() => deleteDocument(property.id, doc.id)}>
-                  <Trash2 className="text-destructive" />
-                  <span className="sr-only">Delete document</span>
-                </Button>
+                <div className="flex items-center gap-0.5">
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    disabled={!hasFile}
+                    title={hasFile ? "Export document" : "No file attached to export"}
+                    onClick={() => downloadDocument(doc)}
+                  >
+                    <Download className={hasFile ? "" : "opacity-40"} />
+                    <span className="sr-only">Export document</span>
+                  </Button>
+                  <Button size="icon-xs" variant="ghost" onClick={() => deleteDocument(property.id, doc.id)}>
+                    <Trash2 className="text-destructive" />
+                    <span className="sr-only">Delete document</span>
+                  </Button>
+                </div>
               </div>
             </div>
           )
