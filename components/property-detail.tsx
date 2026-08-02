@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import Image from "next/image"
+import JSZip from "jszip"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,7 +12,20 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { useStore } from "@/components/store-provider"
 import { propertyImage, expiryState, StatPill } from "@/components/shared"
 import { money, type Property, type PropertyDocument } from "@/lib/zameen-data"
-import { MapPin, FileText, Users, Trash2, Plus, CheckCircle2, Circle, Home, Download } from "lucide-react"
+import {
+  MapPin,
+  FileText,
+  Users,
+  Trash2,
+  Plus,
+  CheckCircle2,
+  Circle,
+  Home,
+  Download,
+  Archive,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export function PropertyDetail({
@@ -97,16 +111,132 @@ function formatFileSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function resolveDownloadName(doc: PropertyDocument) {
+  const ext = doc.fileName?.match(/\.[^.]+$/)?.[0] ?? ""
+  return doc.name.toLowerCase().endsWith(ext.toLowerCase()) ? doc.name : `${doc.name}${ext}`
+}
+
 function downloadDocument(doc: PropertyDocument) {
   if (!doc.dataUrl) return
-  const ext = doc.fileName?.match(/\.[^.]+$/)?.[0] ?? ""
-  const fileName = doc.name.toLowerCase().endsWith(ext.toLowerCase()) ? doc.name : `${doc.name}${ext}`
   const a = document.createElement("a")
   a.href = doc.dataUrl
-  a.download = fileName
+  a.download = resolveDownloadName(doc)
   document.body.appendChild(a)
   a.click()
   a.remove()
+}
+
+// Bundles every attached document into a single .zip — one click, one
+// download — each entry named exactly as it shows in the list (deduped if
+// two documents happen to share a name).
+async function exportAllDocuments(property: Property) {
+  const docs = (property.documents ?? []).filter((d): d is PropertyDocument & { dataUrl: string } => Boolean(d.dataUrl))
+  if (docs.length === 0) return
+
+  const zip = new JSZip()
+  const usedNames = new Set<string>()
+  for (const doc of docs) {
+    const base64 = doc.dataUrl.split(",")[1] ?? ""
+    const base = resolveDownloadName(doc)
+    let finalName = base
+    let n = 1
+    while (usedNames.has(finalName)) {
+      const dot = base.lastIndexOf(".")
+      finalName = dot > -1 ? `${base.slice(0, dot)} (${n})${base.slice(dot)}` : `${base} (${n})`
+      n++
+    }
+    usedNames.add(finalName)
+    zip.file(finalName, base64, { base64: true })
+  }
+
+  const blob = await zip.generateAsync({ type: "blob" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `${property.name.replace(/[^a-z0-9]+/gi, "-") || "documents"}-documents.zip`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+// A gallery-style in-app viewer. Chrome silently blocks window.open() on a
+// data: URL (the tab just shows "about:blank#blocked"), so previewing has to
+// happen inside the app itself rather than a new browser tab. Images render
+// full-size with swipe/arrow navigation between every attached photo, like a
+// phone gallery; PDFs render inline; anything else falls back to a direct
+// download action.
+function DocumentViewer({
+  documents,
+  index,
+  onIndexChange,
+  onClose,
+}: {
+  documents: (PropertyDocument & { dataUrl: string })[]
+  index: number
+  onIndexChange: (i: number) => void
+  onClose: () => void
+}) {
+  const doc = documents[index]
+  if (!doc) return null
+  const isImage = doc.dataUrl.startsWith("data:image/")
+  const isPdf = doc.dataUrl.startsWith("data:application/pdf")
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl gap-0 overflow-hidden p-0 sm:max-w-2xl">
+        <DialogTitle className="sr-only">{doc.name}</DialogTitle>
+        <div className="flex items-center justify-between gap-2 border-b border-border p-3">
+          <p className="truncate text-sm font-medium">{doc.name}</p>
+          <Button size="sm" variant="outline" onClick={() => downloadDocument(doc)}>
+            <Download className="size-4" /> Export
+          </Button>
+        </div>
+        <div className="relative flex min-h-[50vh] items-center justify-center bg-muted/30">
+          {isImage ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={doc.dataUrl} alt={doc.name} className="max-h-[70vh] w-full object-contain" />
+          ) : isPdf ? (
+            <iframe src={doc.dataUrl} title={doc.name} className="h-[70vh] w-full" />
+          ) : (
+            <div className="flex flex-col items-center gap-3 p-10 text-center">
+              <FileText className="size-10 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">Preview isn't available for this file type.</p>
+              <Button size="sm" onClick={() => downloadDocument(doc)}>
+                <Download className="size-4" /> Download to view
+              </Button>
+            </div>
+          )}
+
+          {documents.length > 1 && (
+            <>
+              <button
+                type="button"
+                onClick={() => onIndexChange((index - 1 + documents.length) % documents.length)}
+                className="absolute left-2 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-full bg-background/80 text-foreground shadow-md"
+              >
+                <ChevronLeft className="size-4" />
+                <span className="sr-only">Previous document</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onIndexChange((index + 1) % documents.length)}
+                className="absolute right-2 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-full bg-background/80 text-foreground shadow-md"
+              >
+                <ChevronRight className="size-4" />
+                <span className="sr-only">Next document</span>
+              </button>
+            </>
+          )}
+        </div>
+        {documents.length > 1 && (
+          <p className="border-t border-border p-2 text-center text-xs text-muted-foreground">
+            {index + 1} / {documents.length}
+          </p>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function DocumentsTab({ property }: { property: Property }) {
@@ -116,6 +246,21 @@ function DocumentsTab({ property }: { property: Property }) {
   const [expiry, setExpiry] = useState("")
   const [pendingFile, setPendingFile] = useState<{ dataUrl: string; fileName: string; size: string } | null>(null)
   const [fileError, setFileError] = useState("")
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null)
+  const [isExportingAll, setIsExportingAll] = useState(false)
+
+  const viewableDocs = (property.documents ?? []).filter((d): d is PropertyDocument & { dataUrl: string } =>
+    Boolean(d.dataUrl),
+  )
+
+  async function handleExportAll() {
+    setIsExportingAll(true)
+    try {
+      await exportAllDocuments(property)
+    } finally {
+      setIsExportingAll(false)
+    }
+  }
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -181,60 +326,82 @@ function DocumentsTab({ property }: { property: Property }) {
       {(property.documents ?? []).length === 0 ? (
         <p className="py-4 text-center text-sm text-muted-foreground">No documents yet.</p>
       ) : (
-        (property.documents ?? []).map((doc) => {
-          const state = expiryState(doc.expiry)
-          const hasFile = Boolean(doc.dataUrl)
-          return (
-            <div key={doc.id} className="flex items-center gap-3 rounded-xl border border-border bg-card p-3">
-              <button
-                type="button"
-                onClick={() => hasFile && window.open(doc.dataUrl, "_blank", "noopener,noreferrer")}
-                disabled={!hasFile}
-                title={hasFile ? "Open document" : "No file attached to this record"}
-                className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:cursor-not-allowed"
-              >
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <FileText className="size-4" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{doc.name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {doc.type} · {hasFile ? doc.size : "No file attached"}
-                  </p>
-                </div>
-              </button>
-              <div className="flex flex-col items-end gap-1">
-                <Badge
-                  variant="secondary"
-                  className={cn(
-                    "text-[10px]",
-                    state.tone === "danger" && "bg-destructive/15 text-destructive",
-                    state.tone === "warn" && "bg-chart-3/20 text-foreground",
-                    state.tone === "ok" && "bg-accent/15 text-accent",
-                  )}
+        <>
+          {viewableDocs.length > 0 && (
+            <div className="flex justify-end">
+              <Button size="sm" variant="outline" onClick={handleExportAll} disabled={isExportingAll}>
+                <Archive className="size-4" /> {isExportingAll ? "Exporting…" : `Export all (${viewableDocs.length})`}
+              </Button>
+            </div>
+          )}
+          {(property.documents ?? []).map((doc) => {
+            const state = expiryState(doc.expiry)
+            const hasFile = Boolean(doc.dataUrl)
+            return (
+              <div key={doc.id} className="flex items-center gap-3 rounded-xl border border-border bg-card p-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!hasFile) return
+                    const idx = viewableDocs.findIndex((d) => d.id === doc.id)
+                    if (idx !== -1) setViewerIndex(idx)
+                  }}
+                  disabled={!hasFile}
+                  title={hasFile ? "Open document" : "No file attached to this record"}
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:cursor-not-allowed"
                 >
-                  {state.label}
-                </Badge>
-                <div className="flex items-center gap-0.5">
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    disabled={!hasFile}
-                    title={hasFile ? "Export document" : "No file attached to export"}
-                    onClick={() => downloadDocument(doc)}
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    <FileText className="size-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{doc.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {doc.type} · {hasFile ? doc.size : "No file attached"}
+                    </p>
+                  </div>
+                </button>
+                <div className="flex flex-col items-end gap-1">
+                  <Badge
+                    variant="secondary"
+                    className={cn(
+                      "text-[10px]",
+                      state.tone === "danger" && "bg-destructive/15 text-destructive",
+                      state.tone === "warn" && "bg-chart-3/20 text-foreground",
+                      state.tone === "ok" && "bg-accent/15 text-accent",
+                    )}
                   >
-                    <Download className={hasFile ? "" : "opacity-40"} />
-                    <span className="sr-only">Export document</span>
-                  </Button>
-                  <Button size="icon-xs" variant="ghost" onClick={() => deleteDocument(property.id, doc.id)}>
-                    <Trash2 className="text-destructive" />
-                    <span className="sr-only">Delete document</span>
-                  </Button>
+                    {state.label}
+                  </Badge>
+                  <div className="flex items-center gap-0.5">
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      disabled={!hasFile}
+                      title={hasFile ? "Export document" : "No file attached to export"}
+                      onClick={() => downloadDocument(doc)}
+                    >
+                      <Download className={hasFile ? "" : "opacity-40"} />
+                      <span className="sr-only">Export document</span>
+                    </Button>
+                    <Button size="icon-xs" variant="ghost" onClick={() => deleteDocument(property.id, doc.id)}>
+                      <Trash2 className="text-destructive" />
+                      <span className="sr-only">Delete document</span>
+                    </Button>
+                  </div>
                 </div>
               </div>
-            </div>
-          )
-        })
+            )
+          })}
+        </>
+      )}
+
+      {viewerIndex !== null && (
+        <DocumentViewer
+          documents={viewableDocs}
+          index={viewerIndex}
+          onIndexChange={setViewerIndex}
+          onClose={() => setViewerIndex(null)}
+        />
       )}
     </div>
   )
