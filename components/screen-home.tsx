@@ -3,7 +3,7 @@
 import { useStore } from "@/components/store-provider"
 import { SectionTitle } from "@/components/shared"
 import { Badge } from "@/components/ui/badge"
-import { money, totalProjectSpend, totalPayments, last24Hours, getRecent24HourEntries } from "@/lib/zameen-data"
+import { money, totalProjectSpend, totalPayments, last24Hours, getRecent24HourEntries, getTenantDepositSummary } from "@/lib/zameen-data"
 import { expiryState } from "@/components/shared"
 import { Building2, HardHat, AlertTriangle, TrendingUp, CircleDollarSign, Receipt, WalletCards, History } from "lucide-react"
 
@@ -16,10 +16,13 @@ export function ScreenHome({ onNavigate }: { onNavigate: (tab: string) => void }
   // logged — matches the per-project "Lifetime spend" figure exactly.
   const totalSpend = data.projects.reduce((s, p) => s + totalProjectSpend(p), 0)
 
-  const unpaidRent = data.properties.flatMap((p) =>
-    p.tenants.flatMap((t) => t.rent.filter((r) => !r.paid).map((r) => ({ property: p.name, tenant: t.name, month: r.month, amount: t.monthlyRent }))),
+  const atRiskTenants = data.properties.flatMap((p) =>
+    (p.tenants ?? [])
+      .filter((t) => t.status === "active")
+      .map((t) => ({ property: p.name, tenant: t.name, summary: getTenantDepositSummary(t) }))
+      .filter(({ summary }) => summary.depositRemaining <= 0),
   )
-  const unpaidTotal = unpaidRent.reduce((s, r) => s + r.amount, 0)
+  const arrearsTotal = atRiskTenants.reduce((s, r) => s + r.summary.arrears, 0)
 
   const expiring = data.properties.flatMap((p) =>
     p.documents
@@ -76,16 +79,18 @@ export function ScreenHome({ onNavigate }: { onNavigate: (tab: string) => void }
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <SectionTitle>Rent status</SectionTitle>
-          {unpaidRent.length > 0 && <Badge className="bg-destructive/15 text-destructive">{unpaidRent.length} unpaid</Badge>}
+          {atRiskTenants.length > 0 && <Badge className="bg-destructive/15 text-destructive">{atRiskTenants.length} to follow up</Badge>}
         </div>
-        {unpaidRent.length === 0 ? (
-          <p className="rounded-xl bg-accent/10 p-4 text-sm text-accent">All rent collected. Nicely done.</p>
+        {atRiskTenants.length === 0 ? (
+          <p className="rounded-xl bg-accent/10 p-4 text-sm text-accent">Every tenant's advance is intact. Nicely done.</p>
         ) : (
           <div className="flex flex-col gap-2">
             <p className="text-sm text-muted-foreground">
-              {money(unpaidTotal)} outstanding across {unpaidRent.length} month{unpaidRent.length > 1 ? "s" : ""}.
+              {arrearsTotal > 0
+                ? `${money(arrearsTotal)} owed beyond deposit, across ${atRiskTenants.length} tenant${atRiskTenants.length > 1 ? "s" : ""}.`
+                : `${atRiskTenants.length} tenant${atRiskTenants.length > 1 ? "s have" : " has"} fully used up their advance.`}
             </p>
-            {unpaidRent.slice(0, 3).map((r, i) => (
+            {atRiskTenants.slice(0, 3).map((r, i) => (
               <button
                 key={i}
                 onClick={() => onNavigate("properties")}
@@ -93,11 +98,11 @@ export function ScreenHome({ onNavigate }: { onNavigate: (tab: string) => void }
               >
                 <div>
                   <p className="text-sm font-medium">{r.tenant}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {r.property} · {r.month}
-                  </p>
+                  <p className="text-xs text-muted-foreground">{r.property} · Advance exhausted</p>
                 </div>
-                <span className="font-serif text-sm font-semibold text-destructive">{money(r.amount)}</span>
+                {r.summary.arrears > 0 && (
+                  <span className="font-serif text-sm font-semibold text-destructive">{money(r.summary.arrears)}</span>
+                )}
               </button>
             ))}
           </div>

@@ -1,7 +1,9 @@
 export type PropertyType = "House" | "Plot" | "Commercial"
 export type PropertyStatus = "Owned" | "Rented" | "For Sale"
 
-export type PropertyDocument = {
+// A document attached to either a property or a tenant — identical shape,
+// so the same upload/view/export UI works for both.
+export type UploadedDocument = {
   id: string
   name: string
   type: string
@@ -14,19 +16,36 @@ export type PropertyDocument = {
   dataUrl?: string
 }
 
-export type RentMonth = {
-  month: string
-  paid: boolean
-  paidOn?: string
+export type PropertyDocument = UploadedDocument
+export type TenantDocument = UploadedDocument
+
+export type TenantPayment = {
+  id: string
+  date: string
+  amount: number
+  note?: string
 }
 
 export type Tenant = {
   id: string
   name: string
   phone: string
+  cnic: string
+  guardianName: string
+  address: string
+  occupation: string
+  emergencyContact: string
   monthlyRent: number
-  leaseEnd: string
-  rent: RentMonth[]
+  // The fixed advance/security deposit amount agreed at move-in. Rent that
+  // goes unpaid for a month is quietly drawn down from this instead of
+  // being a manual "unpaid" checkbox — see getTenantLedgerEntries().
+  securityDeposit: number
+  leaseStart: string
+  leaseEnd: string // set once the tenancy has ended; empty while active
+  status: "active" | "ended"
+  notes: string
+  payments: TenantPayment[]
+  documents: TenantDocument[]
 }
 
 export type Property = {
@@ -100,8 +119,12 @@ export type ZameenData = {
   projects: Project[]
 }
 
-const currentMonth = new Date().toLocaleString("en-US", { month: "long", year: "numeric" })
-const previousMonth = new Date(new Date().setMonth(new Date().getMonth() - 1)).toLocaleString("en-US", { month: "long", year: "numeric" })
+const monthsAgoIso = (n: number) => {
+  const d = new Date()
+  d.setDate(1)
+  d.setMonth(d.getMonth() - n)
+  return d.toISOString().slice(0, 10)
+}
 
 export const seedData: ZameenData = {
   properties: [
@@ -114,21 +137,25 @@ export const seedData: ZameenData = {
       size: "10 Marla",
       value: 38500000,
       color: "clay",
-      documents: [
-        { id: "d1", name: "Property Registry", type: "Registry", expiry: "2030-12-31", size: "2.4 MB" },
-        { id: "d2", name: "Tenant Agreement", type: "Lease", expiry: "2026-08-18", size: "840 KB" },
-      ],
+      documents: [{ id: "d1", name: "Property Registry", type: "Registry", expiry: "2030-12-31", size: "2.4 MB" }],
       tenants: [
         {
           id: "t1",
           name: "Ahmed Raza",
           phone: "+92 300 1234567",
+          cnic: "35202-1234567-1",
+          guardianName: "Muhammad Raza",
+          address: "House 12, Street 4, Gulshan-e-Ravi, Lahore",
+          occupation: "Bank Manager",
+          emergencyContact: "+92 300 7654321",
           monthlyRent: 95000,
-          leaseEnd: "2026-08-18",
-          rent: [
-            { month: previousMonth, paid: true, paidOn: "2026-06-03" },
-            { month: currentMonth, paid: false },
-          ],
+          securityDeposit: 190000,
+          leaseStart: monthsAgoIso(2),
+          leaseEnd: "",
+          status: "active",
+          notes: "",
+          payments: [{ id: "pay1", date: monthsAgoIso(1), amount: 95000, note: "Cash — previous month" }],
+          documents: [{ id: "d2", name: "Tenant Agreement", type: "Lease", expiry: "2026-08-18", size: "840 KB" }],
         },
       ],
     },
@@ -291,4 +318,143 @@ export const getProjectLedgerEntries = (project: Project): LedgerEntry[] => {
 export const getRecent24HourEntries = (project: Project) => {
   const now = Date.now()
   return getProjectLedgerEntries(project).filter((entry) => now - new Date(entry.timestamp).getTime() <= 86400000)
+}
+
+// ---------------------------------------------------------------------------
+// Tenant rent + security-deposit ledger
+//
+// A tenant pays a fixed security deposit ("advance") up front. Every
+// calendar month after move-in, one month's rent comes due automatically —
+// there's no manual "mark unpaid" step. If the tenant hasn't covered that
+// month by the time it's due, the shortfall is simply drawn from the
+// deposit. Any money the tenant later pays first tops the deposit back up
+// to its original amount, and only once it's fully restored does the rest
+// count as rent paid ahead for future months. One running number captures
+// all of this — see the worked example in getTenantDepositSummary below.
+// ---------------------------------------------------------------------------
+
+function monthsElapsedSinceLease(leaseStart: string, cutoff: Date): number {
+  if (!leaseStart) return 0
+  const start = new Date(leaseStart)
+  if (Number.isNaN(start.getTime()) || start > cutoff) return 0
+  // Whole months since move-in, counted from the move-in day itself (not
+  // the 1st of the calendar month) — a lease starting on the 28th doesn't
+  // owe a second month's rent the moment the calendar flips a few days
+  // later; the next charge is due on the 28th of the following month.
+  let months = (cutoff.getFullYear() - start.getFullYear()) * 12 + (cutoff.getMonth() - start.getMonth())
+  if (cutoff.getDate() < start.getDate()) months -= 1
+  // Plus the first month's rent, due immediately at move-in.
+  return Math.max(0, months) + 1
+}
+
+export type TenantLedgerEntry = {
+  id: string
+  timestamp: string
+  kind: "deposit" | "rent-due" | "payment"
+  label: string
+  debit: number
+  credit: number
+  balance: number
+}
+
+// Every line that makes up a tenant's lifetime record: the deposit itself,
+// one rent-due line per elapsed month, and every payment on record —
+// merged chronologically into a single running balance. Credit (deposit +
+// payments) raises the balance, debit (rent due) lowers it, so the balance
+// at any point *is* the deposit/credit position at that moment — see
+// getTenantDepositSummary for how that number is read.
+export function getTenantLedgerEntries(tenant: Tenant, asOf: Date = new Date()): TenantLedgerEntry[] {
+  type Draft = Omit<TenantLedgerEntry, "id" | "balance"> & { sourceId?: string }
+  const drafts: Draft[] = []
+
+  if (tenant.leaseStart) {
+    drafts.push({
+      timestamp: tenant.leaseStart,
+      kind: "deposit",
+      label: "Security deposit received",
+      debit: 0,
+      credit: tenant.securityDeposit,
+    })
+  }
+
+  const cutoff = tenant.status === "ended" && tenant.leaseEnd ? new Date(tenant.leaseEnd) : asOf
+  const monthCount = monthsElapsedSinceLease(tenant.leaseStart, cutoff)
+  const start = tenant.leaseStart ? new Date(tenant.leaseStart) : cutoff
+  for (let i = 0; i < monthCount; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth() + i, start.getDate())
+    drafts.push({
+      timestamp: d.toISOString(),
+      kind: "rent-due",
+      label: `Rent due — ${d.toLocaleString("en-US", { month: "long", year: "numeric" })}`,
+      debit: tenant.monthlyRent,
+      credit: 0,
+    })
+  }
+
+  for (const payment of tenant.payments ?? []) {
+    drafts.push({
+      timestamp: payment.date,
+      kind: "payment",
+      label: payment.note?.trim() || "Payment received",
+      debit: 0,
+      credit: payment.amount,
+      sourceId: payment.id,
+    })
+  }
+
+  drafts.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+
+  let balance = 0
+  return drafts.map((d, i) => {
+    balance += d.credit - d.debit
+    return { id: d.sourceId ?? `${tenant.id}-${i}`, timestamp: d.timestamp, kind: d.kind, label: d.label, debit: d.debit, credit: d.credit, balance }
+  })
+}
+
+export type TenantDepositSummary = {
+  totalDue: number
+  totalPaid: number
+  depositTarget: number
+  depositRemaining: number
+  advanceCredit: number
+  arrears: number
+  monthsAheadPaid: number
+}
+
+// Example: Rs 100,000 deposit, Rs 50,000/month rent. Tenant misses a
+// month → depositRemaining drops to 50,000. Tenant then pays 150,000 →
+// 50,000 restores the deposit to 100,000, and the remaining 100,000 covers
+// the next two months as advanceCredit (monthsAheadPaid = 2).
+export function getTenantDepositSummary(tenant: Tenant, asOf: Date = new Date()): TenantDepositSummary {
+  const entries = getTenantLedgerEntries(tenant, asOf)
+  const totalDue = entries.filter((e) => e.kind === "rent-due").reduce((s, e) => s + e.debit, 0)
+  const totalPaid = entries.filter((e) => e.kind === "payment").reduce((s, e) => s + e.credit, 0)
+  const net = entries.length ? entries[entries.length - 1].balance : tenant.securityDeposit
+  const depositRemaining = Math.max(0, Math.min(net, tenant.securityDeposit))
+  const advanceCredit = Math.max(0, net - tenant.securityDeposit)
+  const arrears = Math.max(0, -net)
+  return {
+    totalDue,
+    totalPaid,
+    depositTarget: tenant.securityDeposit,
+    depositRemaining,
+    advanceCredit,
+    arrears,
+    monthsAheadPaid: tenant.monthlyRent > 0 ? Math.floor(advanceCredit / tenant.monthlyRent) : 0,
+  }
+}
+
+export type TenantStatusTone = "ok" | "warn" | "danger" | "accent" | "muted"
+
+// The at-a-glance badge shown against a tenant everywhere in the app — this
+// is the "notify us the advance has run out" signal the landlord watches
+// for, always visible rather than a one-off toast that's easy to miss.
+export function tenantStatusBadge(tenant: Tenant, asOf: Date = new Date()): { label: string; tone: TenantStatusTone } {
+  if (tenant.status === "ended") return { label: "Tenancy ended", tone: "muted" }
+  const s = getTenantDepositSummary(tenant, asOf)
+  if (s.arrears > 0) return { label: `Advance exhausted · ${money(s.arrears)} owed`, tone: "danger" }
+  if (s.depositRemaining <= 0) return { label: "Advance exhausted", tone: "danger" }
+  if (s.advanceCredit > 0) return { label: `${s.monthsAheadPaid} month${s.monthsAheadPaid === 1 ? "" : "s"} paid ahead`, tone: "accent" }
+  if (s.depositRemaining < s.depositTarget) return { label: `${money(s.depositRemaining)} advance left`, tone: "warn" }
+  return { label: "Advance intact", tone: "ok" }
 }

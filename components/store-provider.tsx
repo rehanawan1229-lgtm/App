@@ -7,6 +7,8 @@ import {
   type Property,
   type Project,
   type Tenant,
+  type TenantPayment,
+  type TenantDocument,
   type PropertyDocument,
   type Expense,
   type TransportExpense,
@@ -33,6 +35,61 @@ const localId = () => `${LOCAL_ID_PREFIX}${Date.now()}-${uid()}`
 const apiProjectId = (project: Project) => project.serverId ?? project.id
 const isProjectSynced = (project: Project) => !!project.serverId || !isLocalId(project.id)
 
+// Tenants used to be just { name, phone, monthlyRent, leaseEnd, rent: [{month,
+// paid}] } — no deposit, no profile detail, no documents of their own. This
+// migrates any record saved under that older shape into the current one the
+// first time it's loaded, instead of crashing when a field it now assumes
+// exists (securityDeposit, documents, payments, ...) turns out to be missing.
+function parseLegacyMonthLabel(label: string): Date | null {
+  const d = new Date(`1 ${label}`)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+function normalizeTenant(raw: any): Tenant {
+  const legacyRent: Array<{ month: string; paid: boolean; paidOn?: string }> = Array.isArray(raw?.rent) ? raw.rent : []
+  const monthlyRent = typeof raw?.monthlyRent === "number" ? raw.monthlyRent : 0
+
+  const payments: TenantPayment[] =
+    Array.isArray(raw?.payments) && raw.payments.length > 0
+      ? raw.payments
+      : legacyRent
+          .filter((r) => r.paid)
+          .map((r, i) => ({
+            id: `legacy-${raw?.id ?? uid()}-${i}`,
+            date: r.paidOn || parseLegacyMonthLabel(r.month)?.toISOString().slice(0, 10) || new Date().toISOString().slice(0, 10),
+            amount: monthlyRent,
+            note: `Migrated from earlier records — ${r.month}`,
+          }))
+
+  const leaseStart =
+    typeof raw?.leaseStart === "string" && raw.leaseStart
+      ? raw.leaseStart
+      : (() => {
+          const months = legacyRent.map((r) => parseLegacyMonthLabel(r.month)).filter((d): d is Date => d !== null)
+          if (months.length === 0) return ""
+          return new Date(Math.min(...months.map((d) => d.getTime()))).toISOString().slice(0, 10)
+        })()
+
+  return {
+    id: raw?.id ?? uid(),
+    name: raw?.name ?? "",
+    phone: raw?.phone ?? "",
+    cnic: raw?.cnic ?? "",
+    guardianName: raw?.guardianName ?? "",
+    address: raw?.address ?? "",
+    occupation: raw?.occupation ?? "",
+    emergencyContact: raw?.emergencyContact ?? "",
+    monthlyRent,
+    securityDeposit: typeof raw?.securityDeposit === "number" ? raw.securityDeposit : 0,
+    leaseStart,
+    leaseEnd: raw?.leaseEnd ?? "",
+    status: raw?.status === "ended" ? "ended" : "active",
+    notes: raw?.notes ?? "",
+    payments,
+    documents: Array.isArray(raw?.documents) ? raw.documents : [],
+  }
+}
+
 type Settings = { areaUnit: string; reminders: boolean; googleMapsApiKey?: string }
 
 type StoreContextValue = {
@@ -49,10 +106,13 @@ type StoreContextValue = {
   deleteProperty: (id: string) => void
   addDocument: (propertyId: string, doc: Omit<PropertyDocument, "id">) => void
   deleteDocument: (propertyId: string, docId: string) => void
-  addTenant: (propertyId: string, tenant: Omit<Tenant, "id" | "rent">) => void
+  addTenant: (propertyId: string, tenant: Omit<Tenant, "id" | "status" | "leaseEnd" | "payments" | "documents">) => void
+  endTenancy: (propertyId: string, tenantId: string) => void
   deleteTenant: (propertyId: string, tenantId: string) => void
-  toggleRent: (propertyId: string, tenantId: string, month: string) => void
-  addRentMonth: (propertyId: string, tenantId: string, month: string) => void
+  addTenantPayment: (propertyId: string, tenantId: string, payment: Omit<TenantPayment, "id">) => void
+  deleteTenantPayment: (propertyId: string, tenantId: string, paymentId: string) => void
+  addTenantDocument: (propertyId: string, tenantId: string, doc: Omit<TenantDocument, "id">) => void
+  deleteTenantDocument: (propertyId: string, tenantId: string, docId: string) => void
   addProject: (p: { name: string; propertyId?: string; client?: string; budget?: number; location?: string; link?: string; coordinates?: string }) => Promise<Project>
   updateProject: (id: string, patch: Partial<Project>) => Promise<void>
   deleteProject: (id: string) => Promise<void>
@@ -242,7 +302,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             cachedProperties = parsed.data.properties.map((p: Property) => ({
               ...p,
               documents: Array.isArray(p.documents) ? p.documents : [],
-              tenants: Array.isArray(p.tenants) ? p.tenants.map((t) => ({ ...t, rent: Array.isArray(t.rent) ? t.rent : [] })) : [],
+              tenants: Array.isArray(p.tenants) ? p.tenants.map((t) => normalizeTenant(t)) : [],
             }))
           }
           if (Array.isArray(parsed?.data?.projects)) cachedProjects = parsed.data.projects
@@ -334,33 +394,52 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     addTenant: (propertyId, tenant) =>
       mutateProperty(propertyId, (p) => ({
         ...p,
-        tenants: [{ ...tenant, id: uid(), rent: [{ month: currentMonthLabel(), paid: false }] }, ...(p.tenants ?? [])],
+        // Saving a new tenant automatically closes out whichever tenant is
+        // currently active for this property — a unit has one tenant at a
+        // time, and the outgoing tenant's full history (ledger, documents)
+        // stays on record rather than being overwritten.
+        tenants: [
+          { ...tenant, id: uid(), status: "active", leaseEnd: "", payments: [], documents: [] },
+          ...(p.tenants ?? []).map((t) =>
+            t.status === "active" ? { ...t, status: "ended" as const, leaseEnd: t.leaseEnd || new Date().toISOString().slice(0, 10) } : t,
+          ),
+        ],
+      })),
+    endTenancy: (propertyId, tenantId) =>
+      mutateProperty(propertyId, (p) => ({
+        ...p,
+        tenants: (p.tenants ?? []).map((t) =>
+          t.id === tenantId ? { ...t, status: "ended", leaseEnd: t.leaseEnd || new Date().toISOString().slice(0, 10) } : t,
+        ),
       })),
     deleteTenant: (propertyId, tenantId) =>
       mutateProperty(propertyId, (p) => ({ ...p, tenants: (p.tenants ?? []).filter((t) => t.id !== tenantId) })),
-    toggleRent: (propertyId, tenantId, month) =>
+    addTenantPayment: (propertyId, tenantId, payment) =>
       mutateProperty(propertyId, (p) => ({
         ...p,
         tenants: (p.tenants ?? []).map((t) =>
-          t.id === tenantId
-            ? {
-                ...t,
-                rent: (t.rent ?? []).map((r) =>
-                  r.month === month
-                    ? { ...r, paid: !r.paid, paidOn: !r.paid ? new Date().toISOString().slice(0, 10) : undefined }
-                    : r,
-                ),
-              }
-            : t,
+          t.id === tenantId ? { ...t, payments: [{ ...payment, id: uid() }, ...(t.payments ?? [])] } : t,
         ),
       })),
-    addRentMonth: (propertyId, tenantId, month) =>
+    deleteTenantPayment: (propertyId, tenantId, paymentId) =>
       mutateProperty(propertyId, (p) => ({
         ...p,
         tenants: (p.tenants ?? []).map((t) =>
-          t.id === tenantId && !(t.rent ?? []).some((r) => r.month === month)
-            ? { ...t, rent: [...(t.rent ?? []), { month, paid: false }] }
-            : t,
+          t.id === tenantId ? { ...t, payments: (t.payments ?? []).filter((pay) => pay.id !== paymentId) } : t,
+        ),
+      })),
+    addTenantDocument: (propertyId, tenantId, doc) =>
+      mutateProperty(propertyId, (p) => ({
+        ...p,
+        tenants: (p.tenants ?? []).map((t) =>
+          t.id === tenantId ? { ...t, documents: [{ ...doc, id: uid() }, ...(t.documents ?? [])] } : t,
+        ),
+      })),
+    deleteTenantDocument: (propertyId, tenantId, docId) =>
+      mutateProperty(propertyId, (p) => ({
+        ...p,
+        tenants: (p.tenants ?? []).map((t) =>
+          t.id === tenantId ? { ...t, documents: (t.documents ?? []).filter((d) => d.id !== docId) } : t,
         ),
       })),
 
@@ -507,10 +586,6 @@ function mergeUnsyncedIntoServerProjects(serverProjects: Project[], cachedProjec
 
   const localOnlyProjects = cachedProjects.filter((p) => !isProjectSynced(p))
   return [...localOnlyProjects, ...merged]
-}
-
-function currentMonthLabel() {
-  return new Date().toLocaleString("en-US", { month: "long", year: "numeric" })
 }
 
 export function useStore() {

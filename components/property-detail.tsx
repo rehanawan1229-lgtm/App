@@ -3,28 +3,43 @@
 import { useState } from "react"
 import Image from "next/image"
 import JSZip from "jszip"
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
+import * as XLSX from "xlsx"
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useStore } from "@/components/store-provider"
 import { propertyImage, expiryState, StatPill } from "@/components/shared"
-import { money, type Property, type PropertyDocument } from "@/lib/zameen-data"
+import {
+  money,
+  type Property,
+  type Tenant,
+  type UploadedDocument,
+  getTenantLedgerEntries,
+  getTenantDepositSummary,
+  tenantStatusBadge,
+  type TenantStatusTone,
+} from "@/lib/zameen-data"
 import {
   MapPin,
   FileText,
   Users,
   Trash2,
   Plus,
-  CheckCircle2,
-  Circle,
   Home,
   Download,
   Archive,
   ChevronLeft,
   ChevronRight,
+  Share2,
+  ArrowUp,
+  ArrowDown,
+  Wallet,
+  UserRound,
+  FileSpreadsheet,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -32,66 +47,57 @@ export function PropertyDetail({
   property,
   open,
   onOpenChange,
+  initialTab,
 }: {
   property: Property | null
   open: boolean
-  onOpenChange: (o: boolean) => void
+  onOpenChange: (open: boolean) => void
+  initialTab?: "overview" | "documents" | "tenants"
 }) {
   if (!property) return null
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto p-0">
         <DialogTitle className="sr-only">{property.name}</DialogTitle>
-        <div className="relative h-40 w-full overflow-hidden rounded-t-xl">
+        <DialogDescription className="sr-only">Property details, documents, and tenant records.</DialogDescription>
+        <div className="relative h-40 w-full overflow-hidden">
           <Image src={propertyImage[property.type] || "/placeholder.svg"} alt={property.name} fill className="object-cover" />
-          <div className="absolute inset-0 bg-foreground/45" />
-          <div className="absolute bottom-3 left-4 right-4 text-primary-foreground">
-            <h2 className="font-serif text-xl font-semibold text-primary-foreground text-balance">{property.name}</h2>
-            <p className="flex items-center gap-1 text-sm text-primary-foreground/85">
+          <div className="absolute inset-0 bg-gradient-to-t from-background via-background/10 to-transparent" />
+          <div className="absolute bottom-3 left-4 right-4">
+            <h2 className="font-serif text-xl font-semibold text-foreground drop-shadow">{property.name}</h2>
+            <p className="flex items-center gap-1 text-sm text-foreground/80">
               <MapPin className="size-3.5" /> {property.location || "No location set"}
             </p>
           </div>
         </div>
-
         <div className="p-4">
-          <PropertyTabs property={property} />
+          <PropertyTabs property={property} initialTab={initialTab} />
         </div>
       </DialogContent>
     </Dialog>
   )
 }
 
-function PropertyTabs({ property }: { property: Property }) {
+function PropertyTabs({ property, initialTab }: { property: Property; initialTab?: "overview" | "documents" | "tenants" }) {
   return (
-    <Tabs defaultValue="overview" className="w-full">
+    <Tabs defaultValue={initialTab ?? "overview"} className="w-full">
       <TabsList className="w-full">
-        <TabsTrigger value="overview" className="flex-1 gap-1">
+        <TabsTrigger value="overview" className="flex-1 gap-1.5">
           <Home className="size-3.5" /> Info
         </TabsTrigger>
-        <TabsTrigger value="documents" className="flex-1 gap-1">
+        <TabsTrigger value="documents" className="flex-1 gap-1.5">
           <FileText className="size-3.5" /> Docs
         </TabsTrigger>
-        <TabsTrigger value="tenants" className="flex-1 gap-1">
+        <TabsTrigger value="tenants" className="flex-1 gap-1.5">
           <Users className="size-3.5" /> Rent
         </TabsTrigger>
       </TabsList>
-
       <TabsContent value="overview" className="mt-4">
-        <div className="grid grid-cols-2 gap-3">
-          <StatPill label="Type" value={property.type} />
-          <StatPill label="Status" value={property.status} />
-          <StatPill label="Size" value={property.size || "—"} />
-          <StatPill label="Est. value" value={property.value ? money(property.value) : "—"} tone="accent" />
-        </div>
-        <div className="mt-4 overflow-hidden rounded-xl border border-border">
-          <MapCanvas label={property.location || property.name} />
-        </div>
+        <OverviewTab property={property} />
       </TabsContent>
-
       <TabsContent value="documents" className="mt-4">
         <DocumentsTab property={property} />
       </TabsContent>
-
       <TabsContent value="tenants" className="mt-4">
         <TenantsTab property={property} />
       </TabsContent>
@@ -99,10 +105,63 @@ function PropertyTabs({ property }: { property: Property }) {
   )
 }
 
-// Kept comfortably inside typical browser localStorage limits (this app's
-// whole state — properties, projects, everything — shares one ~5-10MB quota,
-// and a data-URL copy of a file runs about a third bigger than the file
-// itself).
+// ---------------------------------------------------------------------------
+// Overview / Info tab
+// ---------------------------------------------------------------------------
+
+function shareLocationUrl(property: Property) {
+  const query = encodeURIComponent(property.location || property.name)
+  return `https://www.google.com/maps/search/?api=1&query=${query}`
+}
+
+function OverviewTab({ property }: { property: Property }) {
+  const [copied, setCopied] = useState(false)
+
+  async function handleShare() {
+    const url = shareLocationUrl(property)
+    const text = property.location ? `${property.name} — ${property.location}` : property.name
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({ title: property.name, text, url })
+        return
+      } catch {
+        // user cancelled the share sheet — fall through to clipboard
+      }
+    }
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(url)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      } catch {
+        // ignore — nothing more we can do without user permission
+      }
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-2 gap-3">
+        <StatPill label="Type" value={property.type} />
+        <StatPill label="Status" value={property.status} />
+        <StatPill label="Size" value={property.size || "—"} />
+        <StatPill label="Est. value" value={property.value ? money(property.value) : "—"} tone="accent" />
+      </div>
+      <div className="overflow-hidden rounded-xl border border-border">
+        <MapCanvas label={property.location || property.name} />
+      </div>
+      <Button variant="outline" className="w-full" onClick={handleShare}>
+        <Share2 className="size-4" /> {copied ? "Link copied!" : "Share location"}
+      </Button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Shared document upload / view / export — used by both property documents
+// and each tenant's documents, since they're the same shape.
+// ---------------------------------------------------------------------------
+
 const MAX_DOCUMENT_SIZE = 4 * 1024 * 1024
 
 function formatFileSize(bytes: number) {
@@ -111,12 +170,12 @@ function formatFileSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function resolveDownloadName(doc: PropertyDocument) {
+function resolveDownloadName(doc: UploadedDocument) {
   const ext = doc.fileName?.match(/\.[^.]+$/)?.[0] ?? ""
   return doc.name.toLowerCase().endsWith(ext.toLowerCase()) ? doc.name : `${doc.name}${ext}`
 }
 
-function downloadDocument(doc: PropertyDocument) {
+function downloadDocument(doc: UploadedDocument) {
   if (!doc.dataUrl) return
   const a = document.createElement("a")
   a.href = doc.dataUrl
@@ -129,8 +188,8 @@ function downloadDocument(doc: PropertyDocument) {
 // Bundles every attached document into a single .zip — one click, one
 // download — each entry named exactly as it shows in the list (deduped if
 // two documents happen to share a name).
-async function exportAllDocuments(property: Property) {
-  const docs = (property.documents ?? []).filter((d): d is PropertyDocument & { dataUrl: string } => Boolean(d.dataUrl))
+async function exportDocumentsZip(documents: UploadedDocument[], zipBaseName: string) {
+  const docs = documents.filter((d): d is UploadedDocument & { dataUrl: string } => Boolean(d.dataUrl))
   if (docs.length === 0) return
 
   const zip = new JSZip()
@@ -153,7 +212,7 @@ async function exportAllDocuments(property: Property) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url
-  a.download = `${property.name.replace(/[^a-z0-9]+/gi, "-") || "documents"}-documents.zip`
+  a.download = `${zipBaseName.replace(/[^a-z0-9]+/gi, "-") || "documents"}.zip`
   document.body.appendChild(a)
   a.click()
   a.remove()
@@ -163,7 +222,7 @@ async function exportAllDocuments(property: Property) {
 // A gallery-style in-app viewer. Chrome silently blocks window.open() on a
 // data: URL (the tab just shows "about:blank#blocked"), so previewing has to
 // happen inside the app itself rather than a new browser tab. Images render
-// full-size with swipe/arrow navigation between every attached photo, like a
+// full-size with arrow navigation between every attached photo, like a
 // phone gallery; PDFs render inline; anything else falls back to a direct
 // download action.
 function DocumentViewer({
@@ -172,7 +231,7 @@ function DocumentViewer({
   onIndexChange,
   onClose,
 }: {
-  documents: (PropertyDocument & { dataUrl: string })[]
+  documents: (UploadedDocument & { dataUrl: string })[]
   index: number
   onIndexChange: (i: number) => void
   onClose: () => void
@@ -239,8 +298,17 @@ function DocumentViewer({
   )
 }
 
-function DocumentsTab({ property }: { property: Property }) {
-  const { addDocument, deleteDocument } = useStore()
+function DocumentManager({
+  documents,
+  onAdd,
+  onDelete,
+  zipBaseName,
+}: {
+  documents: UploadedDocument[]
+  onAdd: (doc: Omit<UploadedDocument, "id">) => void
+  onDelete: (id: string) => void
+  zipBaseName: string
+}) {
   const [name, setName] = useState("")
   const [type, setType] = useState("")
   const [expiry, setExpiry] = useState("")
@@ -249,18 +317,7 @@ function DocumentsTab({ property }: { property: Property }) {
   const [viewerIndex, setViewerIndex] = useState<number | null>(null)
   const [isExportingAll, setIsExportingAll] = useState(false)
 
-  const viewableDocs = (property.documents ?? []).filter((d): d is PropertyDocument & { dataUrl: string } =>
-    Boolean(d.dataUrl),
-  )
-
-  async function handleExportAll() {
-    setIsExportingAll(true)
-    try {
-      await exportAllDocuments(property)
-    } finally {
-      setIsExportingAll(false)
-    }
-  }
+  const viewableDocs = documents.filter((d): d is UploadedDocument & { dataUrl: string } => Boolean(d.dataUrl))
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -283,7 +340,7 @@ function DocumentsTab({ property }: { property: Property }) {
 
   function add() {
     if (!name.trim()) return
-    addDocument(property.id, {
+    onAdd({
       name: name.trim(),
       type: type.trim() || "Document",
       expiry,
@@ -296,6 +353,15 @@ function DocumentsTab({ property }: { property: Property }) {
     setExpiry("")
     setPendingFile(null)
     setFileError("")
+  }
+
+  async function handleExportAll() {
+    setIsExportingAll(true)
+    try {
+      await exportDocumentsZip(documents, zipBaseName)
+    } finally {
+      setIsExportingAll(false)
+    }
   }
 
   return (
@@ -323,7 +389,7 @@ function DocumentsTab({ property }: { property: Property }) {
         </div>
       </div>
 
-      {(property.documents ?? []).length === 0 ? (
+      {documents.length === 0 ? (
         <p className="py-4 text-center text-sm text-muted-foreground">No documents yet.</p>
       ) : (
         <>
@@ -334,7 +400,7 @@ function DocumentsTab({ property }: { property: Property }) {
               </Button>
             </div>
           )}
-          {(property.documents ?? []).map((doc) => {
+          {documents.map((doc) => {
             const state = expiryState(doc.expiry)
             const hasFile = Boolean(doc.dataUrl)
             return (
@@ -383,7 +449,7 @@ function DocumentsTab({ property }: { property: Property }) {
                       <Download className={hasFile ? "" : "opacity-40"} />
                       <span className="sr-only">Export document</span>
                     </Button>
-                    <Button size="icon-xs" variant="ghost" onClick={() => deleteDocument(property.id, doc.id)}>
+                    <Button size="icon-xs" variant="ghost" onClick={() => onDelete(doc.id)}>
                       <Trash2 className="text-destructive" />
                       <span className="sr-only">Delete document</span>
                     </Button>
@@ -407,137 +473,532 @@ function DocumentsTab({ property }: { property: Property }) {
   )
 }
 
+function DocumentsTab({ property }: { property: Property }) {
+  const { addDocument, deleteDocument } = useStore()
+  return (
+    <DocumentManager
+      documents={property.documents ?? []}
+      zipBaseName={`${property.name}-documents`}
+      onAdd={(doc) => addDocument(property.id, doc)}
+      onDelete={(id) => deleteDocument(property.id, id)}
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Tenants / Rent tab
+// ---------------------------------------------------------------------------
+
+function statusToneClass(tone: TenantStatusTone) {
+  switch (tone) {
+    case "danger":
+      return "bg-destructive/15 text-destructive"
+    case "warn":
+      return "bg-chart-3/20 text-foreground"
+    case "muted":
+      return "bg-muted text-muted-foreground"
+    default:
+      return "bg-accent/15 text-accent"
+  }
+}
+
 function TenantsTab({ property }: { property: Property }) {
-  const { addTenant, deleteTenant, toggleRent, addRentMonth } = useStore()
-  const [adding, setAdding] = useState(false)
-  const [name, setName] = useState("")
-  const [phone, setPhone] = useState("")
-  const [rent, setRent] = useState("")
+  const [addingOpen, setAddingOpen] = useState(false)
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null)
+  const [showHistory, setShowHistory] = useState(false)
 
   if (property.type !== "House") {
-    return (
-      <p className="rounded-xl bg-muted/60 p-4 text-center text-sm text-muted-foreground">
-        Rent tracking is available for house properties only.
-      </p>
-    )
+    return <p className="rounded-xl bg-muted/60 p-4 text-center text-sm text-muted-foreground">Rent tracking is available for house properties only.</p>
   }
 
-  function add() {
-    if (!name.trim()) return
-    addTenant(property.id, {
-      name: name.trim(),
-      phone: phone.trim(),
-      monthlyRent: Number(rent) || 0,
-      leaseEnd: "",
-    })
-    setName("")
-    setPhone("")
-    setRent("")
-    setAdding(false)
-  }
-
-  const nextMonthLabel = new Date(new Date().setMonth(new Date().getMonth() + 1)).toLocaleString("en-US", {
-    month: "long",
-    year: "numeric",
-  })
+  const tenants = property.tenants ?? []
+  const activeTenant = tenants.find((t) => t.status === "active") ?? null
+  const pastTenants = tenants.filter((t) => t.status === "ended")
+  const selectedTenant = tenants.find((t) => t.id === selectedTenantId) ?? null
 
   return (
     <div className="flex flex-col gap-3">
-      {(property.tenants ?? []).map((t) => (
-        <div key={t.id} className="rounded-xl border border-border bg-card p-3">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <p className="text-sm font-medium">{t.name}</p>
-              <p className="text-xs text-muted-foreground">{t.phone || "No phone"}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="font-serif text-sm font-semibold">{money(t.monthlyRent)}/mo</span>
-              <Button size="icon-xs" variant="ghost" onClick={() => deleteTenant(property.id, t.id)}>
-                <Trash2 className="text-destructive" />
-                <span className="sr-only">Remove tenant</span>
-              </Button>
-            </div>
-          </div>
-          <div className="mt-3 flex flex-col gap-1.5">
-            {(t.rent ?? []).map((r) => (
-              <button
-                key={r.month}
-                onClick={() => toggleRent(property.id, t.id, r.month)}
-                className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2 text-left"
-              >
-                <span className="text-sm">{r.month}</span>
-                <span
-                  className={cn(
-                    "flex items-center gap-1.5 text-xs font-medium",
-                    r.paid ? "text-accent" : "text-destructive",
-                  )}
-                >
-                  {r.paid ? <CheckCircle2 className="size-4" /> : <Circle className="size-4" />}
-                  {r.paid ? `Paid ${r.paidOn ?? ""}` : "Unpaid"}
-                </span>
-              </button>
-            ))}
-            <Button
-              size="sm"
-              variant="ghost"
-              className="justify-start text-muted-foreground"
-              onClick={() => addRentMonth(property.id, t.id, nextMonthLabel)}
-            >
-              <Plus className="size-3.5" /> Track {nextMonthLabel}
-            </Button>
-          </div>
-        </div>
-      ))}
+      {activeTenant ? (
+        <TenantCard tenant={activeTenant} onOpen={() => setSelectedTenantId(activeTenant.id)} />
+      ) : (
+        <p className="rounded-xl bg-muted/60 p-4 text-center text-sm text-muted-foreground">No active tenant right now.</p>
+      )}
 
-      {adding ? (
-        <div className="flex flex-col gap-2 rounded-xl border border-dashed border-border p-3">
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tenant name" />
-          <div className="grid grid-cols-2 gap-2">
-            <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone" />
-            <Input
-              inputMode="numeric"
-              value={rent}
-              onChange={(e) => setRent(e.target.value.replace(/[^0-9]/g, ""))}
-              placeholder="Monthly rent"
-            />
+      <Button variant="outline" onClick={() => setAddingOpen(true)}>
+        <Plus className="size-4" /> {activeTenant ? "Replace tenant" : "Add tenant"}
+      </Button>
+      {activeTenant && (
+        <p className="text-center text-xs text-muted-foreground">Adding a new tenant automatically ends {activeTenant.name}'s current tenancy.</p>
+      )}
+
+      {pastTenants.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => setShowHistory((v) => !v)}
+            className="flex items-center justify-between rounded-xl bg-muted/50 px-3 py-2 text-sm font-medium text-muted-foreground"
+          >
+            <span>Tenant history ({pastTenants.length})</span>
+            <ChevronRight className={cn("size-4 transition-transform", showHistory && "rotate-90")} />
+          </button>
+          {showHistory &&
+            pastTenants.map((t) => <TenantCard key={t.id} tenant={t} onOpen={() => setSelectedTenantId(t.id)} compact />)}
+        </div>
+      )}
+
+      <TenantFormDialog open={addingOpen} onOpenChange={setAddingOpen} property={property} />
+      <TenantDetailDialog
+        property={property}
+        tenant={selectedTenant}
+        open={selectedTenant !== null}
+        onOpenChange={(o) => !o && setSelectedTenantId(null)}
+      />
+    </div>
+  )
+}
+
+function TenantCard({ tenant, onOpen, compact }: { tenant: Tenant; onOpen: () => void; compact?: boolean }) {
+  const badge = tenantStatusBadge(tenant)
+  return (
+    <button type="button" onClick={onOpen} className="flex w-full items-center justify-between gap-3 rounded-xl border border-border bg-card p-3 text-left">
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium">{tenant.name}</p>
+        <p className="text-xs text-muted-foreground">{tenant.phone || "No phone"}</p>
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        {!compact && <span className="font-serif text-sm font-semibold">{money(tenant.monthlyRent)}/mo</span>}
+        <Badge variant="secondary" className={cn("text-[10px]", statusToneClass(badge.tone))}>
+          {badge.label}
+        </Badge>
+      </div>
+    </button>
+  )
+}
+
+type TenantFormState = {
+  name: string
+  phone: string
+  cnic: string
+  guardianName: string
+  address: string
+  occupation: string
+  emergencyContact: string
+  monthlyRent: string
+  securityDeposit: string
+  leaseStart: string
+  notes: string
+}
+
+function emptyTenantForm(): TenantFormState {
+  return {
+    name: "",
+    phone: "",
+    cnic: "",
+    guardianName: "",
+    address: "",
+    occupation: "",
+    emergencyContact: "",
+    monthlyRent: "",
+    securityDeposit: "",
+    leaseStart: new Date().toISOString().slice(0, 10),
+    notes: "",
+  }
+}
+
+function TenantFormDialog({ open, onOpenChange, property }: { open: boolean; onOpenChange: (o: boolean) => void; property: Property }) {
+  const { addTenant } = useStore()
+  const [form, setForm] = useState<TenantFormState>(emptyTenantForm())
+  const activeTenant = (property.tenants ?? []).find((t) => t.status === "active")
+
+  function update<K extends keyof TenantFormState>(key: K, value: string) {
+    setForm((f) => ({ ...f, [key]: value }))
+  }
+
+  function submit() {
+    if (!form.name.trim()) return
+    addTenant(property.id, {
+      name: form.name.trim(),
+      phone: form.phone.trim(),
+      cnic: form.cnic.trim(),
+      guardianName: form.guardianName.trim(),
+      address: form.address.trim(),
+      occupation: form.occupation.trim(),
+      emergencyContact: form.emergencyContact.trim(),
+      monthlyRent: Number(form.monthlyRent) || 0,
+      securityDeposit: Number(form.securityDeposit) || 0,
+      leaseStart: form.leaseStart,
+      notes: form.notes.trim(),
+    })
+    setForm(emptyTenantForm())
+    onOpenChange(false)
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        onOpenChange(o)
+        if (!o) setForm(emptyTenantForm())
+      }}
+    >
+      <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
+        <DialogTitle>Add tenant</DialogTitle>
+        <DialogDescription>
+          {activeTenant ? `This ends ${activeTenant.name}'s current tenancy and starts a fresh record.` : "Saved to this property's lifetime tenant history."}
+        </DialogDescription>
+
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-medium text-muted-foreground">Personal details</p>
+            <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="Full name" />
+            <div className="grid grid-cols-2 gap-2">
+              <Input value={form.phone} onChange={(e) => update("phone", e.target.value)} placeholder="Phone" />
+              <Input value={form.cnic} onChange={(e) => update("cnic", e.target.value)} placeholder="CNIC number" />
+            </div>
+            <Input value={form.guardianName} onChange={(e) => update("guardianName", e.target.value)} placeholder="Father / guardian name" />
+            <Input value={form.address} onChange={(e) => update("address", e.target.value)} placeholder="Permanent address" />
+            <div className="grid grid-cols-2 gap-2">
+              <Input value={form.occupation} onChange={(e) => update("occupation", e.target.value)} placeholder="Occupation" />
+              <Input value={form.emergencyContact} onChange={(e) => update("emergencyContact", e.target.value)} placeholder="Emergency contact" />
+            </div>
           </div>
+
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-medium text-muted-foreground">Lease & rent</p>
+            <div className="grid grid-cols-2 gap-2">
+              <Input
+                inputMode="numeric"
+                value={form.monthlyRent}
+                onChange={(e) => update("monthlyRent", e.target.value.replace(/[^0-9]/g, ""))}
+                placeholder="Monthly rent"
+              />
+              <Input
+                inputMode="numeric"
+                value={form.securityDeposit}
+                onChange={(e) => update("securityDeposit", e.target.value.replace(/[^0-9]/g, ""))}
+                placeholder="Security deposit"
+              />
+            </div>
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              Lease start
+              <Input type="date" value={form.leaseStart} onChange={(e) => update("leaseStart", e.target.value)} />
+            </label>
+          </div>
+
+          <Textarea value={form.notes} onChange={(e) => update("notes", e.target.value)} placeholder="Notes (optional)" rows={2} />
+
           <div className="flex gap-2">
-            <Button size="sm" variant="outline" className="flex-1" onClick={() => setAdding(false)}>
+            <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button size="sm" className="flex-1" onClick={add} disabled={!name.trim()}>
-              Add tenant
+            <Button className="flex-1" onClick={submit} disabled={!form.name.trim()}>
+              Save tenant
             </Button>
           </div>
         </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function exportTenantExcel(property: Property, tenant: Tenant) {
+  const entries = getTenantLedgerEntries(tenant)
+  const summary = getTenantDepositSummary(tenant)
+
+  const profileRows = [
+    ["Property", property.name],
+    ["Property location", property.location],
+    ["Tenant name", tenant.name],
+    ["Phone", tenant.phone],
+    ["CNIC", tenant.cnic],
+    ["Guardian / father name", tenant.guardianName],
+    ["Permanent address", tenant.address],
+    ["Occupation", tenant.occupation],
+    ["Emergency contact", tenant.emergencyContact],
+    ["Monthly rent", tenant.monthlyRent],
+    ["Security deposit (target)", tenant.securityDeposit],
+    ["Security deposit (remaining)", summary.depositRemaining],
+    ["Advance credit (paid ahead)", summary.advanceCredit],
+    ["Arrears (owed beyond deposit)", summary.arrears],
+    ["Lease start", tenant.leaseStart],
+    ["Lease end", tenant.leaseEnd || (tenant.status === "active" ? "Ongoing" : "")],
+    ["Status", tenant.status],
+    ["Notes", tenant.notes],
+  ]
+
+  const ledgerRows = [
+    ["Date", "Description", "Due (Debit)", "Paid (Credit)", "Balance"],
+    ...entries.map((e) => [new Date(e.timestamp).toLocaleDateString("en-GB"), e.label, e.debit || "", e.credit || "", e.balance]),
+  ]
+
+  const docsRows = [
+    ["Document name", "Type", "Expiry", "Size", "Original file name"],
+    ...(tenant.documents ?? []).map((d) => [d.name, d.type, d.expiry, d.size, d.fileName ?? ""]),
+  ]
+
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(profileRows), "Profile")
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ledgerRows), "Ledger")
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(docsRows), "Documents")
+
+  XLSX.writeFile(wb, `${tenant.name.replace(/[^a-z0-9]+/gi, "-") || "tenant"}-details.xlsx`)
+}
+
+function TenantLedgerPanel({ property, tenant }: { property: Property; tenant: Tenant }) {
+  const { addTenantPayment, deleteTenantPayment } = useStore()
+  const [sortKey, setSortKey] = useState<"date" | "amount" | "description">("date")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
+  const [payAmount, setPayAmount] = useState("")
+  const [payNote, setPayNote] = useState("")
+  const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10))
+
+  const entries = getTenantLedgerEntries(tenant)
+  const sorted = [...entries].sort((a, b) => {
+    let cmp = 0
+    if (sortKey === "date") cmp = new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    else if (sortKey === "amount") cmp = (a.debit || a.credit) - (b.debit || b.credit)
+    else cmp = a.label.localeCompare(b.label)
+    return sortDir === "asc" ? cmp : -cmp
+  })
+
+  function recordPayment() {
+    const amount = Number(payAmount)
+    if (!amount) return
+    addTenantPayment(property.id, tenant.id, { amount, date: payDate, note: payNote.trim() || undefined })
+    setPayAmount("")
+    setPayNote("")
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {tenant.status === "active" && (
+        <div className="rounded-xl border border-dashed border-border p-3">
+          <p className="mb-2 text-xs font-medium text-muted-foreground">Record a payment</p>
+          <div className="grid grid-cols-2 gap-2">
+            <Input inputMode="numeric" value={payAmount} onChange={(e) => setPayAmount(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Amount" />
+            <Input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+          </div>
+          <Input className="mt-2" value={payNote} onChange={(e) => setPayNote(e.target.value)} placeholder="Note (optional)" />
+          <Button size="sm" className="mt-2 w-full" onClick={recordPayment} disabled={!payAmount}>
+            <Plus className="size-3.5" /> Add payment
+          </Button>
+        </div>
+      )}
+
+      {entries.length === 0 ? (
+        <p className="py-4 text-center text-sm text-muted-foreground">No ledger activity yet.</p>
       ) : (
-        <Button variant="outline" onClick={() => setAdding(true)}>
-          <Plus className="size-4" /> Add tenant
-        </Button>
+        <>
+          <div className="flex items-center gap-2">
+            <Select value={sortKey} onValueChange={(v) => setSortKey(v as "date" | "amount" | "description")}>
+              <SelectTrigger className="h-9 flex-1" size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="date">Sort by Date</SelectItem>
+                <SelectItem value="amount">Sort by Amount</SelectItem>
+                <SelectItem value="description">Sort by Description</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button size="sm" variant="outline" className="h-9 shrink-0" onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}>
+              {sortDir === "asc" ? <ArrowUp className="size-3.5" /> : <ArrowDown className="size-3.5" />}
+              {sortDir === "asc" ? "Asc" : "Desc"}
+            </Button>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-border">
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-muted-foreground">
+                  <tr>
+                    <th className="sticky left-0 z-20 whitespace-nowrap border-r border-border bg-muted px-2 py-2 text-left font-medium shadow-[2px_0_4px_-2px_rgba(0,0,0,0.25)]">
+                      Date
+                    </th>
+                    <th className="bg-muted/60 px-2 py-2 text-left font-medium">Description</th>
+                    <th className="bg-muted/60 px-2 py-2 text-right font-medium">Due</th>
+                    <th className="bg-muted/60 px-2 py-2 text-right font-medium">Paid</th>
+                    <th className="bg-muted/60 px-2 py-2 text-right font-medium">Balance</th>
+                    <th className="bg-muted/60 px-2 py-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.map((entry) => (
+                    <tr key={entry.id} className="border-t border-border">
+                      <td className="sticky left-0 z-10 whitespace-nowrap border-r border-border bg-popover px-2 py-2 text-muted-foreground shadow-[2px_0_4px_-2px_rgba(0,0,0,0.25)]">
+                        {new Date(entry.timestamp).toLocaleDateString("en-GB")}
+                      </td>
+                      <td className="px-2 py-2">{entry.label}</td>
+                      <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{entry.debit ? money(entry.debit) : "—"}</td>
+                      <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-accent">{entry.credit ? money(entry.credit) : "—"}</td>
+                      <td className="whitespace-nowrap px-2 py-2 text-right font-medium tabular-nums">{money(entry.balance)}</td>
+                      <td className="px-1 py-2 text-right">
+                        {entry.kind === "payment" && (
+                          <Button size="icon-xs" variant="ghost" onClick={() => deleteTenantPayment(property.id, tenant.id, entry.id)}>
+                            <Trash2 className="text-destructive" />
+                            <span className="sr-only">Delete payment</span>
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       )}
     </div>
   )
 }
 
+function TenantDetailDialog({
+  property,
+  tenant,
+  open,
+  onOpenChange,
+}: {
+  property: Property
+  tenant: Tenant | null
+  open: boolean
+  onOpenChange: (o: boolean) => void
+}) {
+  const { endTenancy, deleteTenant, addTenantDocument, deleteTenantDocument } = useStore()
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  if (!tenant) return null
+  const badge = tenantStatusBadge(tenant)
+  const summary = getTenantDepositSummary(tenant)
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto p-0">
+        <DialogTitle className="sr-only">{tenant.name}</DialogTitle>
+        <DialogDescription className="sr-only">Tenant profile, deposit ledger, and documents.</DialogDescription>
+        <div className="border-b border-border p-4">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h2 className="truncate font-serif text-lg font-semibold">{tenant.name}</h2>
+              <p className="text-xs text-muted-foreground">{tenant.phone || "No phone"}</p>
+            </div>
+            <Badge variant="secondary" className={cn("shrink-0 text-[10px]", statusToneClass(badge.tone))}>
+              {badge.label}
+            </Badge>
+          </div>
+        </div>
+
+        <div className="p-4">
+          <Tabs defaultValue="profile" className="w-full">
+            <TabsList className="w-full">
+              <TabsTrigger value="profile" className="flex-1 gap-1">
+                <UserRound className="size-3.5" /> Profile
+              </TabsTrigger>
+              <TabsTrigger value="ledger" className="flex-1 gap-1">
+                <Wallet className="size-3.5" /> Ledger
+              </TabsTrigger>
+              <TabsTrigger value="documents" className="flex-1 gap-1">
+                <FileText className="size-3.5" /> Docs
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="profile" className="mt-4 flex flex-col gap-3">
+              <div className="grid grid-cols-2 gap-3">
+                <StatPill label="CNIC" value={tenant.cnic || "—"} />
+                <StatPill label="Guardian" value={tenant.guardianName || "—"} />
+                <StatPill label="Occupation" value={tenant.occupation || "—"} />
+                <StatPill label="Emergency contact" value={tenant.emergencyContact || "—"} />
+              </div>
+              {tenant.address && (
+                <div className="rounded-xl bg-muted/60 p-3">
+                  <p className="text-xs text-muted-foreground">Address</p>
+                  <p className="text-sm">{tenant.address}</p>
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                <StatPill label="Monthly rent" value={money(tenant.monthlyRent)} tone="accent" />
+                <StatPill label="Lease start" value={tenant.leaseStart ? new Date(tenant.leaseStart).toLocaleDateString("en-GB") : "—"} />
+              </div>
+              {tenant.status === "ended" && (
+                <StatPill label="Lease ended" value={tenant.leaseEnd ? new Date(tenant.leaseEnd).toLocaleDateString("en-GB") : "—"} />
+              )}
+              {tenant.notes && (
+                <div className="rounded-xl bg-muted/60 p-3">
+                  <p className="text-xs text-muted-foreground">Notes</p>
+                  <p className="text-sm">{tenant.notes}</p>
+                </div>
+              )}
+
+              <div className={cn("rounded-xl p-3", statusToneClass(badge.tone))}>
+                <p className="text-xs opacity-80">Security deposit</p>
+                <p className="font-serif text-xl font-semibold">
+                  {money(summary.depositRemaining)} <span className="text-sm font-normal opacity-70">of {money(summary.depositTarget)}</span>
+                </p>
+                {summary.arrears > 0 && <p className="mt-1 text-xs">Advance exhausted — {money(summary.arrears)} still owed.</p>}
+                {summary.advanceCredit > 0 && (
+                  <p className="mt-1 text-xs">
+                    {money(summary.advanceCredit)} credited ahead (~{summary.monthsAheadPaid} month{summary.monthsAheadPaid === 1 ? "" : "s"}).
+                  </p>
+                )}
+              </div>
+
+              <Button variant="outline" onClick={() => exportTenantExcel(property, tenant)}>
+                <FileSpreadsheet className="size-4" /> Export to Excel
+              </Button>
+
+              {tenant.status === "active" && (
+                <Button variant="outline" onClick={() => endTenancy(property.id, tenant.id)}>
+                  End tenancy
+                </Button>
+              )}
+
+              {!confirmDelete ? (
+                <Button variant="ghost" className="text-destructive" onClick={() => setConfirmDelete(true)}>
+                  <Trash2 className="size-4" /> Delete tenant record
+                </Button>
+              ) : (
+                <div className="flex gap-2">
+                  <Button variant="outline" className="flex-1" onClick={() => setConfirmDelete(false)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    className="flex-1"
+                    onClick={() => {
+                      deleteTenant(property.id, tenant.id)
+                      setConfirmDelete(false)
+                      onOpenChange(false)
+                    }}
+                  >
+                    Confirm delete
+                  </Button>
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="ledger" className="mt-4">
+              <TenantLedgerPanel property={property} tenant={tenant} />
+            </TabsContent>
+
+            <TabsContent value="documents" className="mt-4">
+              <DocumentManager
+                documents={tenant.documents ?? []}
+                zipBaseName={`${tenant.name}-documents`}
+                onAdd={(doc) => addTenantDocument(property.id, tenant.id, doc)}
+                onDelete={(id) => deleteTenantDocument(property.id, tenant.id, id)}
+              />
+            </TabsContent>
+          </Tabs>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function MapCanvas({ label }: { label: string }) {
   return (
-    <div className="relative h-36 w-full bg-muted">
-      <div
-        className="absolute inset-0 opacity-70"
-        style={{
-          backgroundImage:
-            "linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px)",
-          backgroundSize: "22px 22px",
-        }}
-      />
-      <div className="absolute left-1/4 top-1/3 h-1.5 w-2/3 -rotate-6 rounded bg-accent/30" />
-      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-        <div className="relative flex flex-col items-center">
-          <MapPin className="size-7 fill-primary text-primary drop-shadow" />
-          <span className="mt-1 max-w-32 truncate rounded-full bg-card px-2 py-0.5 text-[10px] font-medium shadow">
-            {label}
-          </span>
-        </div>
+    <div className="relative flex h-32 w-full items-center justify-center bg-[radial-gradient(circle_at_1px_1px,var(--color-border)_1px,transparent_0)] bg-[length:16px_16px]">
+      <div className="flex flex-col items-center gap-1 rounded-lg bg-popover/90 px-3 py-2 text-center shadow-sm">
+        <MapPin className="size-4 text-primary" />
+        <span className="max-w-40 truncate text-xs text-muted-foreground">{label}</span>
       </div>
     </div>
   )
