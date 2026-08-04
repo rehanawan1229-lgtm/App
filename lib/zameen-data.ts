@@ -50,6 +50,9 @@ export type Tenant = {
 
 export type Property = {
   id: string
+  // Same idea as Project.serverId — set once a property created offline
+  // has been confirmed by the server; `id` itself is never renamed.
+  serverId?: string
   name: string
   location: string
   type: PropertyType

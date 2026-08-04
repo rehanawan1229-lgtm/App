@@ -35,6 +35,10 @@ const localId = () => `${LOCAL_ID_PREFIX}${Date.now()}-${uid()}`
 const apiProjectId = (project: Project) => project.serverId ?? project.id
 const isProjectSynced = (project: Project) => !!project.serverId || !isLocalId(project.id)
 
+// Same idea, for properties.
+const apiPropertyId = (property: Property) => property.serverId ?? property.id
+const isPropertySynced = (property: Property) => !!property.serverId || !isLocalId(property.id)
+
 // Tenants used to be just { name, phone, monthlyRent, leaseEnd, rent: [{month,
 // paid}] } — no deposit, no profile detail, no documents of their own. This
 // migrates any record saved under that older shape into the current one the
@@ -101,18 +105,18 @@ type StoreContextValue = {
   theme: "light" | "dark"
   setTheme: (t: "light" | "dark") => void
   setSettings: (s: Partial<Settings>) => void
-  addProperty: (p: Omit<Property, "id" | "documents" | "tenants">) => void
-  updateProperty: (id: string, patch: Partial<Property>) => void
-  deleteProperty: (id: string) => void
-  addDocument: (propertyId: string, doc: Omit<PropertyDocument, "id">) => void
-  deleteDocument: (propertyId: string, docId: string) => void
-  addTenant: (propertyId: string, tenant: Omit<Tenant, "id" | "status" | "leaseEnd" | "payments" | "documents">) => void
-  endTenancy: (propertyId: string, tenantId: string) => void
-  deleteTenant: (propertyId: string, tenantId: string) => void
-  addTenantPayment: (propertyId: string, tenantId: string, payment: Omit<TenantPayment, "id">) => void
-  deleteTenantPayment: (propertyId: string, tenantId: string, paymentId: string) => void
-  addTenantDocument: (propertyId: string, tenantId: string, doc: Omit<TenantDocument, "id">) => void
-  deleteTenantDocument: (propertyId: string, tenantId: string, docId: string) => void
+  addProperty: (p: Omit<Property, "id" | "documents" | "tenants">) => Promise<void>
+  updateProperty: (id: string, patch: Partial<Property>) => Promise<void>
+  deleteProperty: (id: string) => Promise<void>
+  addDocument: (propertyId: string, doc: Omit<PropertyDocument, "id">) => Promise<void>
+  deleteDocument: (propertyId: string, docId: string) => Promise<void>
+  addTenant: (propertyId: string, tenant: Omit<Tenant, "id" | "status" | "leaseEnd" | "payments" | "documents">) => Promise<void>
+  endTenancy: (propertyId: string, tenantId: string) => Promise<void>
+  deleteTenant: (propertyId: string, tenantId: string) => Promise<void>
+  addTenantPayment: (propertyId: string, tenantId: string, payment: Omit<TenantPayment, "id">) => Promise<void>
+  deleteTenantPayment: (propertyId: string, tenantId: string, paymentId: string) => Promise<void>
+  addTenantDocument: (propertyId: string, tenantId: string, doc: Omit<TenantDocument, "id">) => Promise<void>
+  deleteTenantDocument: (propertyId: string, tenantId: string, docId: string) => Promise<void>
   addProject: (p: { name: string; propertyId?: string; client?: string; budget?: number; location?: string; link?: string; coordinates?: string }) => Promise<Project>
   updateProject: (id: string, patch: Partial<Project>) => Promise<void>
   deleteProject: (id: string) => Promise<void>
@@ -148,6 +152,9 @@ function countPending(data: ZameenData): number {
     count += project.transportExpenses.filter((t) => isLocalId(t.id)).length
     count += project.payments.filter((p) => isLocalId(p.id)).length
   }
+  for (const property of data.properties) {
+    if (!isPropertySynced(property)) count += 1
+  }
   return count
 }
 
@@ -169,6 +176,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     deletedProjectIdsRef.current = deletedProjectIds
   }, [deletedProjectIds])
+
+  // Same tombstone idea, for properties.
+  const [deletedPropertyIds, setDeletedPropertyIds] = useState<string[]>([])
+  const deletedPropertyIdsRef = useRef(deletedPropertyIds)
+  useEffect(() => {
+    deletedPropertyIdsRef.current = deletedPropertyIds
+  }, [deletedPropertyIds])
 
   // Mirrors `data` so the background sync routine can always read the latest
   // state without depending on a stale closure across `await`s.
@@ -199,6 +213,36 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           setDeletedProjectIds((ids) => ids.filter((x) => x !== pendingId))
         } catch {
           /* still offline / still failing — try again on the next pass */
+        }
+      }
+      for (const pendingId of deletedPropertyIdsRef.current) {
+        try {
+          await requestJSON(`/api/properties/${pendingId}`, { method: "DELETE" })
+          setDeletedPropertyIds((ids) => ids.filter((x) => x !== pendingId))
+        } catch {
+          /* still offline / still failing — try again on the next pass */
+        }
+      }
+
+      // Properties created offline (still on a "local-" id) haven't been
+      // created on the server at all yet — do that now, sending whatever the
+      // property's current full state is (any edits made since creation are
+      // already folded in, since this reads live state, not a snapshot).
+      for (const property of dataRef.current.properties) {
+        if (isPropertySynced(property)) continue
+        const stableId = property.id
+        const { id: _drop, serverId: _sid, ...rest } = property
+        try {
+          const { property: created } = await requestJSON<{ property: Property }>("/api/properties", {
+            method: "POST",
+            body: JSON.stringify(rest),
+          })
+          setData((d) => ({
+            ...d,
+            properties: d.properties.map((p) => (p.id === stableId ? { ...p, serverId: created.id } : p)),
+          }))
+        } catch {
+          /* still offline — try again on the next pass */
         }
       }
 
@@ -301,11 +345,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [syncPendingRecords])
 
-  // Bootstrap: properties + settings + theme come from this device's local
-  // cache (they aren't server-backed). Projects are hydrated from the server
-  // "database" so every device sees the same expenses/transport/payments —
-  // but any not-yet-synced offline records cached from a previous session are
-  // merged back on top rather than discarded, then a sync pass is kicked off.
+  // Bootstrap: everything (properties + projects) is hydrated from the
+  // shared server "database" so every device signed into Faisal/90851234
+  // sees the exact same data — but any not-yet-synced offline records
+  // cached from a previous session are merged back on top rather than
+  // discarded, then a sync pass is kicked off. Settings/theme stay purely
+  // local (they're a per-device display preference, not shared data).
   useEffect(() => {
     let cancelled = false
 
@@ -314,6 +359,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       let cachedProjects: Project[] | null = null
       let cachedSettings: Partial<Settings> | null = null
       let cachedDeletedProjectIds: string[] = []
+      let cachedDeletedPropertyIds: string[] = []
 
       try {
         const raw = localStorage.getItem(STORAGE_KEY)
@@ -332,6 +378,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           if (Array.isArray(parsed?.data?.projects)) cachedProjects = parsed.data.projects
           if (parsed?.settings) cachedSettings = parsed.settings
           if (Array.isArray(parsed?.deletedProjectIds)) cachedDeletedProjectIds = parsed.deletedProjectIds
+          if (Array.isArray(parsed?.deletedPropertyIds)) cachedDeletedPropertyIds = parsed.deletedPropertyIds
         }
         const storedTheme = localStorage.getItem(THEME_KEY) as "light" | "dark" | null
         const initialTheme = storedTheme ?? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
@@ -353,18 +400,43 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         // server unreachable — keep the local cache / seed fallback above
       }
 
-      // A project the server still returned but that we already asked to
-      // delete (and haven't confirmed yet) shouldn't reappear just because
-      // that earlier delete request failed or hasn't landed — hide it here,
-      // and syncPendingRecords keeps retrying the real delete underneath.
+      let properties = cachedProperties ?? seedData.properties
+      try {
+        const res = await fetch("/api/properties")
+        if (res.ok) {
+          const json = await res.json()
+          if (Array.isArray(json.properties)) {
+            properties = mergeUnsyncedIntoServerProperties(
+              json.properties.map((p: Property) => ({
+                ...p,
+                documents: Array.isArray(p.documents) ? p.documents : [],
+                tenants: Array.isArray(p.tenants) ? p.tenants.map((t) => normalizeTenant(t)) : [],
+              })),
+              cachedProperties,
+            )
+          }
+        }
+      } catch {
+        // server unreachable — keep the local cache / seed fallback above
+      }
+
+      // A project/property the server still returned but that we already
+      // asked to delete (and haven't confirmed yet) shouldn't reappear just
+      // because that earlier delete request failed or hasn't landed — hide
+      // it here, and syncPendingRecords keeps retrying the real delete
+      // underneath.
       if (cachedDeletedProjectIds.length > 0) {
         projects = projects.filter((p) => !cachedDeletedProjectIds.includes(apiProjectId(p)))
       }
+      if (cachedDeletedPropertyIds.length > 0) {
+        properties = properties.filter((p) => !cachedDeletedPropertyIds.includes(apiPropertyId(p)))
+      }
 
       if (!cancelled) {
-        setData({ properties: cachedProperties ?? seedData.properties, projects })
+        setData({ properties, projects })
         if (cachedSettings) setSettingsState((prev) => ({ ...prev, ...cachedSettings }))
         setDeletedProjectIds(cachedDeletedProjectIds)
+        setDeletedPropertyIds(cachedDeletedPropertyIds)
         setReady(true)
         syncPendingRecords()
       }
@@ -385,11 +457,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!ready) return
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ data, settings, deletedProjectIds }))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ data, settings, deletedProjectIds, deletedPropertyIds }))
     } catch {
       // ignore storage quota errors
     }
-  }, [data, settings, deletedProjectIds, ready])
+  }, [data, settings, deletedProjectIds, deletedPropertyIds, ready])
 
   const setTheme = useCallback((t: "light" | "dark") => {
     setThemeState(t)
@@ -398,8 +470,32 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const setSettings = useCallback((s: Partial<Settings>) => setSettingsState((prev) => ({ ...prev, ...s })), [])
 
-  const mutateProperty = (id: string, fn: (p: Property) => Property) =>
-    setData((d) => ({ ...d, properties: d.properties.map((p) => (p.id === id ? fn(p) : p)) }))
+  // Applies a local change to a property, then pushes the *resulting*
+  // full property object to the server (if it's already synced) — captured
+  // directly from the setData updater, not re-read from `dataRef`
+  // afterwards, since dataRef only refreshes after the next render and would
+  // otherwise hand pushProperty a stale, pre-edit copy.
+  const mutateProperty = (id: string, fn: (p: Property) => Property) => {
+    let updated: Property | undefined
+    setData((d) => ({
+      ...d,
+      properties: d.properties.map((p) => {
+        if (p.id !== id) return p
+        updated = fn(p)
+        return updated
+      }),
+    }))
+    if (updated) pushProperty(updated)
+  }
+
+  async function pushProperty(property: Property) {
+    if (!isPropertySynced(property)) return // not created server-side yet — syncPendingRecords will create it with this state already applied
+    try {
+      await requestJSON(`/api/properties/${apiPropertyId(property)}`, { method: "PATCH", body: JSON.stringify(property) })
+    } catch (error) {
+      console.error("property sync: will retry once back online", error)
+    }
+  }
 
   const mutateProject = (id: string, fn: (p: Project) => Project) =>
     setData((d) => ({ ...d, projects: d.projects.map((p) => (p.id === id ? fn(p) : p)) }))
@@ -407,6 +503,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   // Resolves the current server-facing id for a project this store knows by
   // its stable client id, and whether it's actually reached the server yet.
   const resolveProject = (id: string) => dataRef.current.projects.find((p) => p.id === id)
+  const resolveProperty = (id: string) => dataRef.current.properties.find((p) => p.id === id)
 
   const value: StoreContextValue = {
     ready,
@@ -417,15 +514,31 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     theme,
     setTheme,
     setSettings,
-    addProperty: (p) =>
-      setData((d) => ({ ...d, properties: [{ ...p, id: uid(), documents: [], tenants: [] }, ...d.properties] })),
-    updateProperty: (id, patch) => mutateProperty(id, (p) => ({ ...p, ...patch })),
-    deleteProperty: (id) => setData((d) => ({ ...d, properties: d.properties.filter((p) => p.id !== id) })),
-    addDocument: (propertyId, doc) =>
+    addProperty: async (p) => {
+      const property: Property = { ...p, id: localId(), documents: [], tenants: [] }
+      setData((d) => ({ ...d, properties: [property, ...d.properties] }))
+      syncPendingRecords()
+    },
+    updateProperty: async (id, patch) => mutateProperty(id, (p) => ({ ...p, ...patch })),
+    deleteProperty: async (id) => {
+      const property = resolveProperty(id)
+      const wasSynced = property ? isPropertySynced(property) : false
+      const apiId = property ? apiPropertyId(property) : id
+      setData((d) => ({ ...d, properties: d.properties.filter((p) => p.id !== id) }))
+      if (!wasSynced) return // never existed server-side
+      setDeletedPropertyIds((ids) => (ids.includes(apiId) ? ids : [...ids, apiId]))
+      try {
+        await requestJSON(`/api/properties/${apiId}`, { method: "DELETE" })
+        setDeletedPropertyIds((ids) => ids.filter((x) => x !== apiId))
+      } catch (error) {
+        console.error("deleteProperty: server delete failed, will retry in the background", error)
+      }
+    },
+    addDocument: async (propertyId, doc) =>
       mutateProperty(propertyId, (p) => ({ ...p, documents: [{ ...doc, id: uid() }, ...(p.documents ?? [])] })),
-    deleteDocument: (propertyId, docId) =>
+    deleteDocument: async (propertyId, docId) =>
       mutateProperty(propertyId, (p) => ({ ...p, documents: (p.documents ?? []).filter((doc) => doc.id !== docId) })),
-    addTenant: (propertyId, tenant) =>
+    addTenant: async (propertyId, tenant) =>
       mutateProperty(propertyId, (p) => ({
         ...p,
         // Saving a new tenant automatically closes out whichever tenant is
@@ -439,37 +552,37 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           ),
         ],
       })),
-    endTenancy: (propertyId, tenantId) =>
+    endTenancy: async (propertyId, tenantId) =>
       mutateProperty(propertyId, (p) => ({
         ...p,
         tenants: (p.tenants ?? []).map((t) =>
           t.id === tenantId ? { ...t, status: "ended", leaseEnd: t.leaseEnd || new Date().toISOString().slice(0, 10) } : t,
         ),
       })),
-    deleteTenant: (propertyId, tenantId) =>
+    deleteTenant: async (propertyId, tenantId) =>
       mutateProperty(propertyId, (p) => ({ ...p, tenants: (p.tenants ?? []).filter((t) => t.id !== tenantId) })),
-    addTenantPayment: (propertyId, tenantId, payment) =>
+    addTenantPayment: async (propertyId, tenantId, payment) =>
       mutateProperty(propertyId, (p) => ({
         ...p,
         tenants: (p.tenants ?? []).map((t) =>
           t.id === tenantId ? { ...t, payments: [{ ...payment, id: uid() }, ...(t.payments ?? [])] } : t,
         ),
       })),
-    deleteTenantPayment: (propertyId, tenantId, paymentId) =>
+    deleteTenantPayment: async (propertyId, tenantId, paymentId) =>
       mutateProperty(propertyId, (p) => ({
         ...p,
         tenants: (p.tenants ?? []).map((t) =>
           t.id === tenantId ? { ...t, payments: (t.payments ?? []).filter((pay) => pay.id !== paymentId) } : t,
         ),
       })),
-    addTenantDocument: (propertyId, tenantId, doc) =>
+    addTenantDocument: async (propertyId, tenantId, doc) =>
       mutateProperty(propertyId, (p) => ({
         ...p,
         tenants: (p.tenants ?? []).map((t) =>
           t.id === tenantId ? { ...t, documents: [{ ...doc, id: uid() }, ...(t.documents ?? [])] } : t,
         ),
       })),
-    deleteTenantDocument: (propertyId, tenantId, docId) =>
+    deleteTenantDocument: async (propertyId, tenantId, docId) =>
       mutateProperty(propertyId, (p) => ({
         ...p,
         tenants: (p.tenants ?? []).map((t) =>
@@ -624,6 +737,34 @@ function mergeUnsyncedIntoServerProjects(serverProjects: Project[], cachedProjec
 
   const localOnlyProjects = cachedProjects.filter((p) => !isProjectSynced(p))
   return [...localOnlyProjects, ...merged]
+}
+
+// Same idea as mergeUnsyncedIntoServerProjects, but simpler: properties sync
+// as one whole object per change rather than having their own independently
+// tracked sub-records, so there's nothing to layer back on except properties
+// that still need to be created server-side.
+function mergeUnsyncedIntoServerProperties(serverProperties: Property[], cachedProperties: Property[] | null): Property[] {
+  if (!cachedProperties) return serverProperties
+
+  const merged = serverProperties.map((serverProperty) => {
+    const cached = cachedProperties.find((p) => (p.serverId ?? p.id) === serverProperty.id)
+    if (!cached) return serverProperty
+    return { ...serverProperty, id: cached.id, serverId: cached.serverId }
+  })
+
+  // Anything cached with no matching server record needs to be created.
+  // This also one-time-migrates properties that were already sitting in a
+  // device's local cache from before server sync existed at all: those use
+  // the old plain uid()-style id, which doesn't start with "local-" and so
+  // wouldn't otherwise be recognized as unsynced — reassigning a proper
+  // local id here (instead of relying on isPropertySynced's prefix check)
+  // routes them through the normal create-sync path exactly once.
+  const matchedIds = new Set(merged.map((p) => p.serverId ?? p.id))
+  const toCreate = cachedProperties
+    .filter((p) => !matchedIds.has(p.serverId ?? p.id))
+    .map((p) => (isPropertySynced(p) ? { ...p, id: localId(), serverId: undefined } : p))
+
+  return [...toCreate, ...merged]
 }
 
 export function useStore() {
