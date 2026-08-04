@@ -1,18 +1,20 @@
-import { kv } from "@vercel/kv"
+import { Redis } from "@upstash/redis"
 import { seedData, type Project, type Property, type Expense, type TransportExpense, type Payment } from "@/lib/zameen-data"
 
-// Shared cloud "database" for the whole app. Both collections live in Vercel
-// KV under these two keys — since the app has exactly one login
-// (Faisal / 90851234) shared by every device, there is deliberately no
-// per-user partitioning: everyone who signs in reads and writes the same
-// two lists, which is what makes "same data on every device" work.
+// Shared cloud "database" for the whole app. Both collections live in this
+// Upstash Redis database under these two keys — since the app has exactly
+// one login (Faisal / 90851234) shared by every device, there is
+// deliberately no per-user partitioning: everyone who signs in reads and
+// writes the same two lists, which is what makes "same data on every
+// device" work.
 //
-// Requires a KV store to be created and connected to this Vercel project
-// (Project → Storage → Create Database → KV, then redeploy so the
-// KV_REST_API_URL / KV_REST_API_TOKEN env vars are injected). Until that's
-// done, reads fall back to the built-in seed data and writes throw — callers
-// already handle that as "still offline" and keep the change safe on the
-// device until it can sync.
+// Requires UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN to be set as
+// environment variables on the Vercel project (Project → Settings →
+// Environment Variables, then redeploy). Redis.fromEnv() reads those two
+// vars automatically. Until they're set, reads fall back to the built-in
+// seed data and writes throw — callers already handle that as "still
+// offline" and keep the change safe on the device until it can sync.
+const kv = Redis.fromEnv()
 const PROJECTS_KEY = "zameen:projects"
 const PROPERTIES_KEY = "zameen:properties"
 

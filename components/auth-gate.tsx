@@ -10,45 +10,35 @@ import { Input } from "@/components/ui/input"
 const REQUIRED_USERNAME = "Faisal"
 const REQUIRED_PASSWORD = "90851234"
 
-// Once unlocked, a device doesn't have to sign in again for this long.
-const SESSION_DURATION_MS = 24 * 60 * 60 * 1000 // 24 hours
-
 const AUTH_STORAGE_KEY = "zameen-auth-v1"
 
-type StoredSession = { expiresAt: number }
-
-// The unlock is stored in this browser's own localStorage, so it's
-// per-device by nature: unlocking on one phone never unlocks it on anyone
-// else's phone or browser — each one gets asked for the password the first
-// time, then stays unlocked on that device alone for 24 hours.
-function readStoredSession(): StoredSession | null {
+// The unlock is stored in sessionStorage (not localStorage), so it only
+// survives reloads/tab-switches within the current browsing session. As
+// soon as the app/browser tab is fully closed and reopened — or the PWA is
+// swiped away and relaunched — sessionStorage is cleared and the login
+// screen appears again. This is per-device by nature (each phone asks for
+// the password on its own), but the underlying data is still fully shared
+// across every device via the cloud sync in store-provider.
+function readStoredSession(): boolean {
   try {
-    const raw = localStorage.getItem(AUTH_STORAGE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw)
-    return typeof parsed?.expiresAt === "number" ? parsed : null
+    return sessionStorage.getItem(AUTH_STORAGE_KEY) === "unlocked"
   } catch {
-    return null
+    return false
   }
-}
-
-function isSessionValid(session: StoredSession | null): boolean {
-  return !!session && session.expiresAt > Date.now()
 }
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   // "checking" avoids briefly flashing the login form (or the app) before
-  // we've had a chance to read localStorage on mount.
+  // we've had a chance to read sessionStorage on mount.
   const [status, setStatus] = useState<"checking" | "locked" | "unlocked">("checking")
 
   useEffect(() => {
-    setStatus(isSessionValid(readStoredSession()) ? "unlocked" : "locked")
+    setStatus(readStoredSession() ? "unlocked" : "locked")
   }, [])
 
   function unlock() {
     try {
-      const session: StoredSession = { expiresAt: Date.now() + SESSION_DURATION_MS }
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session))
+      sessionStorage.setItem(AUTH_STORAGE_KEY, "unlocked")
     } catch {
       // ignore storage errors — the session just won't persist across reloads
     }
