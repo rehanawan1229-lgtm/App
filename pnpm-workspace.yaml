@@ -1,3 +1,6 @@
 allowBuilds:
-  msw: set this to true or false
-  sharp: set this to true or false
+  sharp: true
+minimumReleaseAgeExclude:
+  - '@upstash/redis@1.38.2'
+overrides:
+  hono: "4.12.25"
