@@ -18,8 +18,14 @@ export function ScreenProperties() {
   const [filter, setFilter] = useState<"All" | PropertyType>("All")
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<Property | null>(null)
-  const [selected, setSelected] = useState<Property | null>(null)
+  // Holding the id (not the Property object) means the dialog always reads
+  // the live record from `data.properties` on every render. If we stored the
+  // object itself, deleting a document/tenant/payment inside the open dialog
+  // would update the store but the dialog would keep showing the old
+  // snapshot until it was closed and reopened.
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [menuId, setMenuId] = useState<string | null>(null)
+  const selected = selectedId ? data.properties.find((p) => p.id === selectedId) ?? null : null
 
   const filtered = useMemo(
     () =>
@@ -75,7 +81,7 @@ export function ScreenProperties() {
       <div className="flex flex-col gap-3">
         {filtered.map((property) => (
           <article key={property.id} className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-            <button className="block w-full text-left" onClick={() => setSelected(property)}>
+            <button className="block w-full text-left" onClick={() => setSelectedId(property.id)}>
               <div className="relative h-36 w-full">
                 <Image
                   src={propertyImage[property.type] || "/placeholder.svg"}
@@ -151,7 +157,7 @@ export function ScreenProperties() {
       </div>
 
       {formOpen && <PropertyForm key={editing?.id ?? "new"} open={formOpen} onOpenChange={setFormOpen} editing={editing} />}
-      <PropertyDetail property={selected} open={!!selected} onOpenChange={(o) => !o && setSelected(null)} />
+      <PropertyDetail property={selected} open={!!selected} onOpenChange={(o) => !o && setSelectedId(null)} />
     </div>
   )
 }

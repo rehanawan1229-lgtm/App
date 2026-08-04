@@ -128,13 +128,13 @@ export function ScreenHome({ onNavigate }: { onNavigate: (tab: string) => void }
                 </div>
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <div className="rounded-lg bg-muted/60 p-2">
-                  <p className="text-[11px] text-muted-foreground">Lifetime spend</p>
-                  <p className="font-serif text-sm font-semibold">{money(spend)}</p>
+                <div className="min-w-0 rounded-lg bg-muted/60 p-2">
+                  <p className="truncate text-[11px] text-muted-foreground">Lifetime spend</p>
+                  <p className="truncate font-serif text-sm font-semibold">{money(spend)}</p>
                 </div>
-                <div className="rounded-lg bg-accent/10 p-2">
-                  <p className="text-[11px] text-accent">Last 24h</p>
-                  <p className="font-serif text-sm font-semibold text-accent">{money(recent)}</p>
+                <div className="min-w-0 rounded-lg bg-accent/10 p-2">
+                  <p className="truncate text-[11px] text-accent">Last 24h</p>
+                  <p className="truncate font-serif text-sm font-semibold text-accent">{money(recent)}</p>
                 </div>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">

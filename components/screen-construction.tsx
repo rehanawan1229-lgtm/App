@@ -89,19 +89,19 @@ export function ScreenConstruction() {
               </div>
 
               <div className="mt-3 grid grid-cols-3 gap-2">
-                <div className="rounded-lg bg-muted/60 p-2">
-                  <p className="text-[11px] text-muted-foreground">Total spend</p>
-                  <p className="font-serif text-sm font-semibold tabular-nums">{money(spent)}</p>
+                <div className="min-w-0 rounded-lg bg-muted/60 p-2">
+                  <p className="truncate text-[11px] text-muted-foreground">Total spend</p>
+                  <p className="truncate font-serif text-sm font-semibold tabular-nums">{money(spent)}</p>
                 </div>
-                <div className="rounded-lg bg-accent/10 p-2">
-                  <p className="flex items-center gap-1 text-[11px] text-accent">
-                    <Clock className="size-3" /> Last 24h
+                <div className="min-w-0 rounded-lg bg-accent/10 p-2">
+                  <p className="flex items-center gap-1 truncate text-[11px] text-accent">
+                    <Clock className="size-3 shrink-0" /> Last 24h
                   </p>
-                  <p className="font-serif text-sm font-semibold tabular-nums text-accent">{money(recent)}</p>
+                  <p className="truncate font-serif text-sm font-semibold tabular-nums text-accent">{money(recent)}</p>
                 </div>
-                <div className="rounded-lg bg-muted/60 p-2">
-                  <p className="text-[11px] text-muted-foreground">Balance</p>
-                  <p className="font-serif text-sm font-semibold tabular-nums">{money(remaining)}</p>
+                <div className="min-w-0 rounded-lg bg-muted/60 p-2">
+                  <p className="truncate text-[11px] text-muted-foreground">Balance</p>
+                  <p className="truncate font-serif text-sm font-semibold tabular-nums">{money(remaining)}</p>
                 </div>
               </div>
 

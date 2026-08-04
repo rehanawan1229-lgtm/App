@@ -46,9 +46,9 @@ export function StatPill({
     destructive: "text-destructive",
   }[tone]
   return (
-    <div className={cn("flex flex-col gap-1 rounded-xl bg-muted/60 p-3", className)}>
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-      <span className={cn("font-serif text-base font-semibold tabular-nums", toneClass)}>{value}</span>
+    <div className={cn("flex min-w-0 flex-col gap-1 rounded-xl bg-muted/60 p-3", className)}>
+      <span className="truncate text-xs font-medium text-muted-foreground">{label}</span>
+      <span className={cn("truncate font-serif text-base font-semibold tabular-nums", toneClass)}>{value}</span>
     </div>
   )
 }

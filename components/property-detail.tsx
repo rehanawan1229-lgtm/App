@@ -4,7 +4,7 @@ import { useState } from "react"
 import Image from "next/image"
 import JSZip from "jszip"
 import * as XLSX from "xlsx"
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import { Dialog, DialogClose, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -40,6 +40,8 @@ import {
   Wallet,
   UserRound,
   FileSpreadsheet,
+  X,
+  Navigation,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -57,12 +59,28 @@ export function PropertyDetail({
   if (!property) return null
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto p-0">
+      <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto p-0" showCloseButton={false}>
         <DialogTitle className="sr-only">{property.name}</DialogTitle>
         <DialogDescription className="sr-only">Property details, documents, and tenant records.</DialogDescription>
         <div className="relative h-40 w-full overflow-hidden">
           <Image src={propertyImage[property.type] || "/placeholder.svg"} alt={property.name} fill className="object-cover" />
           <div className="absolute inset-0 bg-gradient-to-t from-background via-background/10 to-transparent" />
+          {/* Custom close button instead of the dialog's default ghost-style
+              one: ghost has no background of its own, so its icon can end up
+              nearly invisible sitting directly on top of a photo — this one
+              always has a solid dark circle behind it so the X reads clearly
+              no matter what the photo looks like or what screen it's on. */}
+          <DialogClose
+            render={
+              <button
+                type="button"
+                aria-label="Close"
+                className="absolute right-3 top-3 z-10 flex size-8 items-center justify-center rounded-full bg-black/60 text-white shadow-md transition-colors hover:bg-black/80"
+              />
+            }
+          >
+            <X className="size-4" />
+          </DialogClose>
           <div className="absolute bottom-3 left-4 right-4">
             <h2 className="font-serif text-xl font-semibold text-foreground drop-shadow">{property.name}</h2>
             <p className="flex items-center gap-1 text-sm text-foreground/80">
@@ -114,6 +132,14 @@ function shareLocationUrl(property: Property) {
   return `https://www.google.com/maps/search/?api=1&query=${query}`
 }
 
+// Opens Google Maps directly in turn-by-turn directions mode to this
+// property, with the destination pre-filled and no origin set — Maps asks
+// the user for their starting point (or uses their current location) itself.
+function getDirectionsUrl(property: Property) {
+  const destination = encodeURIComponent(property.location || property.name)
+  return `https://www.google.com/maps/dir/?api=1&destination=${destination}`
+}
+
 function OverviewTab({ property }: { property: Property }) {
   const [copied, setCopied] = useState(false)
 
@@ -150,9 +176,17 @@ function OverviewTab({ property }: { property: Property }) {
       <div className="overflow-hidden rounded-xl border border-border">
         <MapCanvas label={property.location || property.name} />
       </div>
-      <Button variant="outline" className="w-full" onClick={handleShare}>
-        <Share2 className="size-4" /> {copied ? "Link copied!" : "Share location"}
-      </Button>
+      <div className="grid grid-cols-2 gap-2">
+        <Button variant="outline" onClick={handleShare}>
+          <Share2 className="size-4" /> {copied ? "Link copied!" : "Share location"}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => window.open(getDirectionsUrl(property), "_blank", "noopener,noreferrer")}
+        >
+          <Navigation className="size-4" /> Get Directions
+        </Button>
+      </div>
     </div>
   )
 }
@@ -243,20 +277,31 @@ function DocumentViewer({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-2xl gap-0 overflow-hidden p-0 sm:max-w-2xl">
+      {/* max-h + overflow-y-auto keep the whole card inside the viewport on
+          short mobile screens — without it a tall image could push the
+          bottom of the card (and the nav arrows, which are centered on the
+          image area) below the fold, so they'd exist but never be visible. */}
+      <DialogContent className="flex max-h-[92vh] w-full max-w-2xl flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
         <DialogTitle className="sr-only">{doc.name}</DialogTitle>
-        <div className="flex items-center justify-between gap-2 border-b border-border p-3">
+        {/* pr-12 keeps the title/Export button clear of the dialog's built-in
+            close (X) button, which is absolutely positioned in the top-right
+            corner — on narrow/mobile widths there isn't enough spare room
+            otherwise and the two visually overlap. */}
+        <div className="flex items-center justify-between gap-2 border-b border-border p-3 pr-12">
           <p className="truncate text-sm font-medium">{doc.name}</p>
-          <Button size="sm" variant="outline" onClick={() => downloadDocument(doc)}>
+          <Button size="sm" variant="outline" className="shrink-0" onClick={() => downloadDocument(doc)}>
             <Download className="size-4" /> Export
           </Button>
         </div>
-        <div className="relative flex min-h-[50vh] items-center justify-center bg-muted/30">
+        {/* Fixed height (not min-height) so top-1/2 on the nav arrows always
+            centers against a predictable box, and the box itself is capped
+            so it plus the header/footer never exceeds the viewport. */}
+        <div className="relative flex h-[60vh] items-center justify-center overflow-hidden bg-muted/30">
           {isImage ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={doc.dataUrl} alt={doc.name} className="max-h-[70vh] w-full object-contain" />
+            <img src={doc.dataUrl} alt={doc.name} className="max-h-full max-w-full object-contain" />
           ) : isPdf ? (
-            <iframe src={doc.dataUrl} title={doc.name} className="h-[70vh] w-full" />
+            <iframe src={doc.dataUrl} title={doc.name} className="h-full w-full" />
           ) : (
             <div className="flex flex-col items-center gap-3 p-10 text-center">
               <FileText className="size-10 text-muted-foreground" />
@@ -272,7 +317,7 @@ function DocumentViewer({
               <button
                 type="button"
                 onClick={() => onIndexChange((index - 1 + documents.length) % documents.length)}
-                className="absolute left-2 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-full bg-background/80 text-foreground shadow-md"
+                className="absolute left-2 top-1/2 z-10 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-background/90 text-foreground shadow-md"
               >
                 <ChevronLeft className="size-4" />
                 <span className="sr-only">Previous document</span>
@@ -280,7 +325,7 @@ function DocumentViewer({
               <button
                 type="button"
                 onClick={() => onIndexChange((index + 1) % documents.length)}
-                className="absolute right-2 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-full bg-background/80 text-foreground shadow-md"
+                className="absolute right-2 top-1/2 z-10 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-background/90 text-foreground shadow-md"
               >
                 <ChevronRight className="size-4" />
                 <span className="sr-only">Next document</span>
@@ -605,6 +650,38 @@ function emptyTenantForm(): TenantFormState {
   }
 }
 
+// Keystroke-level filters so the wrong kind of character can't be typed into
+// a field in the first place (letters into a phone number, digits into a
+// name, ...). Each returns the cleaned-up value to store.
+const onlyLetters = (v: string) => v.replace(/[^a-zA-Z\s'.-]/g, "")
+const phoneChars = (v: string) => v.replace(/[^0-9+\-\s]/g, "")
+
+// Field-level validation messages shown once the field has something in it —
+// these catch values that are the right *kind* of character but still not a
+// usable phone/CNIC (too short, wrong length, etc).
+function tenantFieldError(key: keyof TenantFormState, value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ""
+  switch (key) {
+    case "name":
+    case "guardianName":
+      return trimmed.length < 2 ? "Enter a valid name" : ""
+    case "occupation":
+      return trimmed.length < 2 ? "Enter a valid occupation" : ""
+    case "phone":
+    case "emergencyContact": {
+      const digits = trimmed.replace(/[^0-9]/g, "")
+      return digits.length < 10 || digits.length > 11 ? "Enter a valid phone number (10–11 digits)" : ""
+    }
+    case "cnic": {
+      const digits = trimmed.replace(/[^0-9]/g, "")
+      return digits.length !== 13 ? "CNIC must be 13 digits" : ""
+    }
+    default:
+      return ""
+  }
+}
+
 function TenantFormDialog({ open, onOpenChange, property }: { open: boolean; onOpenChange: (o: boolean) => void; property: Property }) {
   const { addTenant } = useStore()
   const [form, setForm] = useState<TenantFormState>(emptyTenantForm())
@@ -614,8 +691,18 @@ function TenantFormDialog({ open, onOpenChange, property }: { open: boolean; onO
     setForm((f) => ({ ...f, [key]: value }))
   }
 
+  const errors = {
+    name: tenantFieldError("name", form.name),
+    phone: tenantFieldError("phone", form.phone),
+    cnic: tenantFieldError("cnic", form.cnic),
+    guardianName: tenantFieldError("guardianName", form.guardianName),
+    occupation: tenantFieldError("occupation", form.occupation),
+    emergencyContact: tenantFieldError("emergencyContact", form.emergencyContact),
+  }
+  const hasBlockingError = Object.values(errors).some(Boolean)
+
   function submit() {
-    if (!form.name.trim()) return
+    if (!form.name.trim() || hasBlockingError) return
     addTenant(property.id, {
       name: form.name.trim(),
       phone: form.phone.trim(),
@@ -650,16 +737,57 @@ function TenantFormDialog({ open, onOpenChange, property }: { open: boolean; onO
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <p className="text-xs font-medium text-muted-foreground">Personal details</p>
-            <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="Full name" />
-            <div className="grid grid-cols-2 gap-2">
-              <Input value={form.phone} onChange={(e) => update("phone", e.target.value)} placeholder="Phone" />
-              <Input value={form.cnic} onChange={(e) => update("cnic", e.target.value)} placeholder="CNIC number" />
+            <div>
+              <Input value={form.name} onChange={(e) => update("name", onlyLetters(e.target.value))} placeholder="Full name" />
+              {errors.name && <p className="mt-1 text-xs text-destructive">{errors.name}</p>}
             </div>
-            <Input value={form.guardianName} onChange={(e) => update("guardianName", e.target.value)} placeholder="Father / guardian name" />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <Input
+                  inputMode="tel"
+                  value={form.phone}
+                  onChange={(e) => update("phone", phoneChars(e.target.value))}
+                  placeholder="Phone"
+                />
+                {errors.phone && <p className="mt-1 text-xs text-destructive">{errors.phone}</p>}
+              </div>
+              <div>
+                <Input
+                  inputMode="numeric"
+                  value={form.cnic}
+                  onChange={(e) => update("cnic", e.target.value.replace(/[^0-9]/g, "").slice(0, 13))}
+                  placeholder="CNIC number"
+                />
+                {errors.cnic && <p className="mt-1 text-xs text-destructive">{errors.cnic}</p>}
+              </div>
+            </div>
+            <div>
+              <Input
+                value={form.guardianName}
+                onChange={(e) => update("guardianName", onlyLetters(e.target.value))}
+                placeholder="Father / guardian name"
+              />
+              {errors.guardianName && <p className="mt-1 text-xs text-destructive">{errors.guardianName}</p>}
+            </div>
             <Input value={form.address} onChange={(e) => update("address", e.target.value)} placeholder="Permanent address" />
             <div className="grid grid-cols-2 gap-2">
-              <Input value={form.occupation} onChange={(e) => update("occupation", e.target.value)} placeholder="Occupation" />
-              <Input value={form.emergencyContact} onChange={(e) => update("emergencyContact", e.target.value)} placeholder="Emergency contact" />
+              <div>
+                <Input
+                  value={form.occupation}
+                  onChange={(e) => update("occupation", onlyLetters(e.target.value))}
+                  placeholder="Occupation"
+                />
+                {errors.occupation && <p className="mt-1 text-xs text-destructive">{errors.occupation}</p>}
+              </div>
+              <div>
+                <Input
+                  inputMode="tel"
+                  value={form.emergencyContact}
+                  onChange={(e) => update("emergencyContact", phoneChars(e.target.value))}
+                  placeholder="Emergency contact"
+                />
+                {errors.emergencyContact && <p className="mt-1 text-xs text-destructive">{errors.emergencyContact}</p>}
+              </div>
             </div>
           </div>
 
@@ -691,7 +819,7 @@ function TenantFormDialog({ open, onOpenChange, property }: { open: boolean; onO
             <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button className="flex-1" onClick={submit} disabled={!form.name.trim()}>
+            <Button className="flex-1" onClick={submit} disabled={!form.name.trim() || hasBlockingError}>
               Save tenant
             </Button>
           </div>
