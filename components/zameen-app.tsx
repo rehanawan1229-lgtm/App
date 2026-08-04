@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { Building2, HardHat, Home, Map, Settings } from "lucide-react"
+import { AuthGate } from "@/components/auth-gate"
 import { StoreProvider, useStore } from "@/components/store-provider"
 import { ScreenHome } from "@/components/screen-home"
 import { ScreenProperties } from "@/components/screen-properties"
@@ -22,9 +23,11 @@ type Tab = (typeof tabs)[number]["id"]
 
 export function ZameenApp() {
   return (
-    <StoreProvider>
-      <AppShell />
-    </StoreProvider>
+    <AuthGate>
+      <StoreProvider>
+        <AppShell />
+      </StoreProvider>
+    </AuthGate>
   )
 }
 
