@@ -158,6 +158,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettingsState] = useState<Settings>({ areaUnit: "Marla", reminders: true })
   const [theme, setThemeState] = useState<"light" | "dark">("light")
 
+  // Projects whose delete was requested but not yet confirmed deleted by the
+  // server (request failed, or the device was offline). Kept as a tombstone
+  // list — separate from `data` — so that even if the server still hands
+  // back a "deleted" project (the delete request never actually reached it),
+  // bootstrap filters it back out locally instead of letting it reappear,
+  // and syncPendingRecords keeps retrying the real delete in the background.
+  const [deletedProjectIds, setDeletedProjectIds] = useState<string[]>([])
+  const deletedProjectIdsRef = useRef(deletedProjectIds)
+  useEffect(() => {
+    deletedProjectIdsRef.current = deletedProjectIds
+  }, [deletedProjectIds])
+
   // Mirrors `data` so the background sync routine can always read the latest
   // state without depending on a stale closure across `await`s.
   const dataRef = useRef(data)
@@ -179,6 +191,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     if (syncingRef.current) return
     syncingRef.current = true
     try {
+      // Retry any deletes that didn't make it to the server yet, before
+      // pushing anything else up.
+      for (const pendingId of deletedProjectIdsRef.current) {
+        try {
+          await requestJSON(`/api/projects/${pendingId}`, { method: "DELETE" })
+          setDeletedProjectIds((ids) => ids.filter((x) => x !== pendingId))
+        } catch {
+          /* still offline / still failing — try again on the next pass */
+        }
+      }
+
       for (const snapshot of dataRef.current.projects) {
         const stableId = snapshot.id
         let apiId = apiProjectId(snapshot)
@@ -290,6 +313,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       let cachedProperties: Property[] | null = null
       let cachedProjects: Project[] | null = null
       let cachedSettings: Partial<Settings> | null = null
+      let cachedDeletedProjectIds: string[] = []
 
       try {
         const raw = localStorage.getItem(STORAGE_KEY)
@@ -307,6 +331,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           }
           if (Array.isArray(parsed?.data?.projects)) cachedProjects = parsed.data.projects
           if (parsed?.settings) cachedSettings = parsed.settings
+          if (Array.isArray(parsed?.deletedProjectIds)) cachedDeletedProjectIds = parsed.deletedProjectIds
         }
         const storedTheme = localStorage.getItem(THEME_KEY) as "light" | "dark" | null
         const initialTheme = storedTheme ?? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
@@ -328,9 +353,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         // server unreachable — keep the local cache / seed fallback above
       }
 
+      // A project the server still returned but that we already asked to
+      // delete (and haven't confirmed yet) shouldn't reappear just because
+      // that earlier delete request failed or hasn't landed — hide it here,
+      // and syncPendingRecords keeps retrying the real delete underneath.
+      if (cachedDeletedProjectIds.length > 0) {
+        projects = projects.filter((p) => !cachedDeletedProjectIds.includes(apiProjectId(p)))
+      }
+
       if (!cancelled) {
         setData({ properties: cachedProperties ?? seedData.properties, projects })
         if (cachedSettings) setSettingsState((prev) => ({ ...prev, ...cachedSettings }))
+        setDeletedProjectIds(cachedDeletedProjectIds)
         setReady(true)
         syncPendingRecords()
       }
@@ -351,11 +385,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!ready) return
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ data, settings }))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ data, settings, deletedProjectIds }))
     } catch {
       // ignore storage quota errors
     }
-  }, [data, settings, ready])
+  }, [data, settings, deletedProjectIds, ready])
 
   const setTheme = useCallback((t: "light" | "dark") => {
     setThemeState(t)
@@ -472,10 +506,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const apiId = project ? apiProjectId(project) : id
       setData((d) => ({ ...d, projects: d.projects.filter((p) => p.id !== id) }))
       if (!wasSynced) return // never existed server-side
+      setDeletedProjectIds((ids) => (ids.includes(apiId) ? ids : [...ids, apiId]))
       try {
         await requestJSON(`/api/projects/${apiId}`, { method: "DELETE" })
+        setDeletedProjectIds((ids) => ids.filter((x) => x !== apiId))
       } catch (error) {
-        console.error("deleteProject: server delete failed, project removed locally", error)
+        console.error("deleteProject: server delete failed, will retry in the background", error)
+        // Left in deletedProjectIds — syncPendingRecords retries it, and
+        // bootstrap will hide it locally even if a retry hasn't run yet.
       }
     },
     addExpense: async (projectId, e) => {

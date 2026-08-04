@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { PropertyForm } from "@/components/property-form"
 import { PropertyDetail } from "@/components/property-detail"
-import { propertyImage } from "@/components/shared"
+import { propertyImage, useConfirmDialog } from "@/components/shared"
 import { money, type Property, type PropertyType } from "@/lib/zameen-data"
 
 export function ScreenProperties() {
@@ -18,6 +18,7 @@ export function ScreenProperties() {
   const [filter, setFilter] = useState<"All" | PropertyType>("All")
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<Property | null>(null)
+  const { confirm, dialog: confirmDialog } = useConfirmDialog()
   // Holding the id (not the Property object) means the dialog always reads
   // the live record from `data.properties` on every render. If we stored the
   // object itself, deleting a document/tenant/payment inside the open dialog
@@ -134,8 +135,13 @@ export function ScreenProperties() {
                     variant="destructive"
                     className="flex-1"
                     onClick={() => {
-                      if (window.confirm(`Delete ${property.name}?`)) deleteProperty(property.id)
                       setMenuId(null)
+                      confirm({
+                        title: "Delete this property?",
+                        description: `"${property.name}" and all its documents, tenants, and rent history will be permanently removed. This can't be undone.`,
+                        confirmLabel: "Delete property",
+                        onConfirm: () => deleteProperty(property.id),
+                      })
                     }}
                   >
                     <Trash2 /> Delete
@@ -158,6 +164,7 @@ export function ScreenProperties() {
 
       {formOpen && <PropertyForm key={editing?.id ?? "new"} open={formOpen} onOpenChange={setFormOpen} editing={editing} />}
       <PropertyDetail property={selected} open={!!selected} onOpenChange={(o) => !o && setSelectedId(null)} />
+      {confirmDialog}
     </div>
   )
 }

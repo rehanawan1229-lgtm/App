@@ -1,7 +1,91 @@
 "use client"
 
+import { useState } from "react"
+import { AlertTriangle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { PropertyType } from "@/lib/zameen-data"
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
+
+// A proper in-app confirmation dialog instead of the browser's native
+// window.confirm(): it always renders the same way everywhere (native
+// confirm can silently do nothing in some installed-app/PWA contexts), and
+// it's clearer for a first-time user — a plain title, one line of context,
+// and two unmistakable buttons instead of a small system popup.
+export function ConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  confirmLabel = "Delete",
+  onConfirm,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  description?: string
+  confirmLabel?: string
+  onConfirm: () => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <div className="flex size-12 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+            <AlertTriangle className="size-5" />
+          </div>
+          <DialogTitle className="font-serif text-lg font-semibold">{title}</DialogTitle>
+          {description && <DialogDescription className="text-sm text-muted-foreground">{description}</DialogDescription>}
+        </div>
+        <div className="mt-2 flex gap-2">
+          <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            className="flex-1"
+            onClick={() => {
+              onOpenChange(false)
+              onConfirm()
+            }}
+          >
+            {confirmLabel}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// Small hook so callers just get back { confirm(), dialog } — call confirm()
+// with the message details, render {dialog} once in the tree, done. Keeps
+// every delete button's onClick a one-liner instead of managing its own
+// open/pending state.
+export function useConfirmDialog() {
+  const [state, setState] = useState<{
+    title: string
+    description?: string
+    confirmLabel?: string
+    onConfirm: () => void
+  } | null>(null)
+
+  function confirm(args: { title: string; description?: string; confirmLabel?: string; onConfirm: () => void }) {
+    setState(args)
+  }
+
+  const dialog = (
+    <ConfirmDialog
+      open={!!state}
+      onOpenChange={(o) => !o && setState(null)}
+      title={state?.title ?? ""}
+      description={state?.description}
+      confirmLabel={state?.confirmLabel}
+      onConfirm={() => state?.onConfirm()}
+    />
+  )
+
+  return { confirm, dialog }
+}
 
 export const propertyImage: Record<PropertyType, string> = {
   House: "/prop-house.png",

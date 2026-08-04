@@ -5,7 +5,7 @@ import { Plus, HardHat, Clock, Trash2, Receipt, WalletCards, ScrollText, PencilL
 import { useStore } from "@/components/store-provider"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { SectionTitle, StatPill } from "@/components/shared"
+import { SectionTitle, StatPill, useConfirmDialog } from "@/components/shared"
 import { ProjectDetail } from "@/components/project-detail"
 import { money, totalProjectSpend, budgetRemaining, last24Hours, type Project } from "@/lib/zameen-data"
 
@@ -14,6 +14,7 @@ export function ScreenConstruction() {
   const [quickName, setQuickName] = useState("")
   const [selected, setSelected] = useState<Project | null>(null)
   const [initialTab, setInitialTab] = useState<"expenses" | "payments" | "ledger" | "edit">("expenses")
+  const { confirm, dialog: confirmDialog } = useConfirmDialog()
 
   const grandTotal = data.projects.reduce((s, p) => s + totalProjectSpend(p), 0)
   const grand24 = data.projects.reduce((s, p) => s + last24Hours(p), 0)
@@ -76,14 +77,21 @@ export function ScreenConstruction() {
                   </div>
                 </div>
                 <Button
-                  size="icon-xs"
+                  size="icon-sm"
                   variant="ghost"
+                  aria-label={`Delete ${project.name}`}
+                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                   onClick={(e) => {
                     e.stopPropagation()
-                    if (window.confirm(`Delete ${project.name}?`)) deleteProject(project.id)
+                    confirm({
+                      title: "Delete this project?",
+                      description: `"${project.name}" and all its expenses, transport entries, and payments will be permanently removed. This can't be undone.`,
+                      confirmLabel: "Delete project",
+                      onConfirm: () => deleteProject(project.id),
+                    })
                   }}
                 >
-                  <Trash2 className="text-destructive" />
+                  <Trash2 className="size-4" />
                   <span className="sr-only">Delete project</span>
                 </Button>
               </div>
@@ -167,6 +175,7 @@ export function ScreenConstruction() {
           }
         }}
       />
+      {confirmDialog}
     </div>
   )
 }

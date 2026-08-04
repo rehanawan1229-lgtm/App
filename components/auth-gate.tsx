@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, type FormEvent } from "react"
+import { useEffect, useState } from "react"
 import { Lock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -75,9 +75,8 @@ function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
 
-  function handleSubmit(e: FormEvent) {
-    e.preventDefault()
-    if (username.trim() === REQUIRED_USERNAME && password === REQUIRED_PASSWORD) {
+  function attemptUnlock() {
+    if (username.trim().toLowerCase() === REQUIRED_USERNAME.toLowerCase() && password === REQUIRED_PASSWORD) {
       setError("")
       onUnlock()
       return
@@ -87,10 +86,7 @@ function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
 
   return (
     <main className="flex min-h-svh items-center justify-center bg-muted/40 p-4">
-      <form
-        onSubmit={handleSubmit}
-        className="flex w-full max-w-sm flex-col gap-4 rounded-2xl border border-border bg-card p-6 shadow-sm"
-      >
+      <div className="flex w-full max-w-sm flex-col gap-4 rounded-2xl border border-border bg-card p-6 shadow-sm">
         <div className="flex flex-col items-center gap-2 text-center">
           <div className="flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
             <Lock className="size-5" />
@@ -113,6 +109,9 @@ function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
                 setUsername(e.target.value)
                 if (error) setError("")
               }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") attemptUnlock()
+              }}
               placeholder="Username"
             />
           </div>
@@ -129,6 +128,9 @@ function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
                 setPassword(e.target.value)
                 if (error) setError("")
               }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") attemptUnlock()
+              }}
               placeholder="Password"
             />
           </div>
@@ -136,10 +138,10 @@ function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
 
         {error && <p className="text-xs text-destructive">{error}</p>}
 
-        <Button type="submit" className="w-full" disabled={!username.trim() || !password}>
+        <Button className="w-full" disabled={!username.trim() || !password} onClick={attemptUnlock}>
           Unlock
         </Button>
-      </form>
+      </div>
     </main>
   )
 }
