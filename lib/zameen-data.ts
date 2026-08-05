@@ -55,6 +55,10 @@ export type Property = {
   serverId?: string
   name: string
   location: string
+  // Raw Google Maps link (or plain "lat,lng") the user pastes for this
+  // property. Used as-is for Share location / Get Directions, and parsed
+  // (see extractCoordsFromMapsUrl) to place a pin on the Property map.
+  locationUrl?: string
   type: PropertyType
   status: PropertyStatus
   size: string
@@ -62,6 +66,34 @@ export type Property = {
   color: string
   documents: PropertyDocument[]
   tenants: Tenant[]
+}
+
+// Pulls a "lat,lng" pair out of a pasted Google Maps link so it can drive
+// the Property map's embed. Handles a plain coordinate pair, a place pin
+// (!3d..!4d..), a view-center (@lat,lng), and q=/query=/ll= params — covers
+// every link Google's "Share" sheet actually produces. Short links
+// (maps.app.goo.gl/...) don't contain coordinates in the URL itself, so
+// those can't be resolved client-side; Share/Get Directions still work
+// since they use the link as-is, but the map pin falls back to the text
+// location in that case.
+export function extractCoordsFromMapsUrl(input?: string): string | undefined {
+  if (!input) return undefined
+  const text = input.trim()
+  if (!text) return undefined
+
+  const bare = text.match(/^(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)$/)
+  if (bare) return `${bare[1]},${bare[2]}`
+
+  const pin = text.match(/!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)/)
+  if (pin) return `${pin[1]},${pin[2]}`
+
+  const at = text.match(/@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/)
+  if (at) return `${at[1]},${at[2]}`
+
+  const param = text.match(/[?&](?:q|query|ll)=(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/)
+  if (param) return `${param[1]},${param[2]}`
+
+  return undefined
 }
 
 export type Expense = {

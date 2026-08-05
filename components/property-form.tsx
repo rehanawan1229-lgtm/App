@@ -30,6 +30,7 @@ export function PropertyForm({
   const { addProperty, updateProperty } = useStore()
   const [name, setName] = useState(editing?.name ?? "")
   const [location, setLocation] = useState(editing?.location ?? "")
+  const [locationUrl, setLocationUrl] = useState(editing?.locationUrl ?? "")
   const [type, setType] = useState<PropertyType>(editing?.type ?? "House")
   const [status, setStatus] = useState<PropertyStatus>(editing?.status ?? "Owned")
   const [size, setSize] = useState(editing?.size ?? "")
@@ -40,6 +41,7 @@ export function PropertyForm({
     const payload = {
       name: name.trim(),
       location: location.trim(),
+      locationUrl: locationUrl.trim(),
       type,
       status,
       size: size.trim(),
@@ -65,6 +67,13 @@ export function PropertyForm({
           </Field>
           <Field label="Location">
             <Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Area, city" />
+          </Field>
+          <Field label="Location URL (Google Maps link)">
+            <Input
+              value={locationUrl}
+              onChange={(e) => setLocationUrl(e.target.value)}
+              placeholder="Paste Google Maps share link"
+            />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Type">

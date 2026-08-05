@@ -21,6 +21,7 @@ import {
   getTenantLedgerEntries,
   getTenantDepositSummary,
   tenantStatusBadge,
+  extractCoordsFromMapsUrl,
   type TenantStatusTone,
 } from "@/lib/zameen-data"
 import {
@@ -127,7 +128,11 @@ function PropertyTabs({ property, initialTab }: { property: Property; initialTab
 // Overview / Info tab
 // ---------------------------------------------------------------------------
 
+// If the property has a Location URL saved, share/directions use that exact
+// link — whatever the user pasted from Google Maps. Otherwise falls back to
+// a search built from the free-text location/name.
 function shareLocationUrl(property: Property) {
+  if (property.locationUrl?.trim()) return property.locationUrl.trim()
   const query = encodeURIComponent(property.location || property.name)
   return `https://www.google.com/maps/search/?api=1&query=${query}`
 }
@@ -136,6 +141,7 @@ function shareLocationUrl(property: Property) {
 // property, with the destination pre-filled and no origin set — Maps asks
 // the user for their starting point (or uses their current location) itself.
 function getDirectionsUrl(property: Property) {
+  if (property.locationUrl?.trim()) return property.locationUrl.trim()
   const destination = encodeURIComponent(property.location || property.name)
   return `https://www.google.com/maps/dir/?api=1&destination=${destination}`
 }
@@ -174,7 +180,7 @@ function OverviewTab({ property }: { property: Property }) {
         <StatPill label="Est. value" value={property.value ? money(property.value) : "—"} tone="accent" />
       </div>
       <div className="overflow-hidden rounded-xl border border-border">
-        <MapCanvas label={property.location || property.name} />
+        <MapCanvas label={property.location || property.name} locationUrl={property.locationUrl} />
       </div>
       <div className="grid grid-cols-2 gap-2">
         <Button variant="outline" onClick={handleShare}>
@@ -1121,7 +1127,16 @@ function TenantDetailDialog({
   )
 }
 
-export function MapCanvas({ label }: { label: string }) {
+export function MapCanvas({ label, locationUrl }: { label: string; locationUrl?: string }) {
+  const coords = extractCoordsFromMapsUrl(locationUrl)
+  if (coords) {
+    const embedUrl = `https://www.google.com/maps?q=${encodeURIComponent(coords)}&z=15&output=embed`
+    return (
+      <div className="h-32 w-full">
+        <iframe title={label} src={embedUrl} className="h-full w-full border-0" loading="lazy" />
+      </div>
+    )
+  }
   return (
     <div className="relative flex h-32 w-full items-center justify-center bg-[radial-gradient(circle_at_1px_1px,var(--color-border)_1px,transparent_0)] bg-[length:16px_16px]">
       <div className="flex flex-col items-center gap-1 rounded-lg bg-popover/90 px-3 py-2 text-center shadow-sm">

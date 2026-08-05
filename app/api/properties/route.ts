@@ -23,6 +23,7 @@ export async function POST(request: Request) {
     const property = await createPropertyRecord({
       name,
       location: typeof body.location === "string" ? body.location : "",
+      locationUrl: typeof body.locationUrl === "string" ? body.locationUrl : "",
       type: (body.type as PropertyType) ?? "House",
       status: (body.status as PropertyStatus) ?? "Owned",
       size: typeof body.size === "string" ? body.size : "",

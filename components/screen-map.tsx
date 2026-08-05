@@ -4,7 +4,7 @@ import { useMemo, useState } from "react"
 import { Building2, Home, MapPin, Store } from "lucide-react"
 import { useStore } from "@/components/store-provider"
 import { Badge } from "@/components/ui/badge"
-import { money, totalProjectSpend, totalPayments } from "@/lib/zameen-data"
+import { money, totalProjectSpend, totalPayments, extractCoordsFromMapsUrl } from "@/lib/zameen-data"
 
 type MarkerItem = {
   id: string
@@ -52,7 +52,7 @@ export function ScreenMap() {
       name: property.name,
       type: property.type,
       location: property.location,
-      coordinates: undefined,
+      coordinates: extractCoordsFromMapsUrl(property.locationUrl),
       image: undefined,
       spend: 0,
       payments: 0,
@@ -62,9 +62,15 @@ export function ScreenMap() {
 
   const selectedItem = selected ?? mapItems[0] ?? null
 
+  // Prefer exact coordinates parsed from the property/project's location
+  // URL; fall back to the free-text location so the pin still lands
+  // roughly right even without a URL; only default to a generic city view
+  // once neither is available.
   const mapEmbedUrl = selectedItem?.coordinates
     ? `https://www.google.com/maps?q=${encodeURIComponent(selectedItem.coordinates)}&z=14&output=embed`
-    : "https://www.google.com/maps?q=Lahore&z=10&output=embed"
+    : selectedItem?.location && selectedItem.location !== "Location pending"
+      ? `https://www.google.com/maps?q=${encodeURIComponent(selectedItem.location)}&z=13&output=embed`
+      : "https://www.google.com/maps?q=Lahore&z=10&output=embed"
 
   return (
     <div className="flex flex-col gap-4 pb-4">
