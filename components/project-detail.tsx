@@ -31,6 +31,7 @@ import {
   Download,
   ArrowUp,
   ArrowDown,
+  ChevronLeft,
 } from "lucide-react"
 import { parseQuickExpenseEntry, findProjectByName } from "@/lib/expense-utils"
 
@@ -78,6 +79,29 @@ export function ProjectDetail({
   const generalSpend = totalExpenses(project)
   const remaining = budgetRemaining(project)
 
+  // Ledger gets its own minimal layout — no stat cards, no 4-way tab bar, no
+  // description line, just a back button and the statement table, so it
+  // reads like an opened spreadsheet rather than another app screen. Every
+  // other tab keeps the normal header + tab bar.
+  if (tab === "ledger") {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="flex max-h-[90vh] max-w-md flex-col overflow-y-auto">
+          <DialogTitle className="sr-only">{project.name} — Ledger</DialogTitle>
+          <DialogDescription className="sr-only">Full lifetime statement for {project.name}.</DialogDescription>
+          <button
+            type="button"
+            onClick={() => setTab("expenses")}
+            className="flex w-fit items-center gap-1 text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            <ChevronLeft className="size-4" /> Back
+          </button>
+          <LifetimeLedger project={project} />
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[90vh] max-w-md flex-col overflow-y-auto">
@@ -122,9 +146,6 @@ export function ProjectDetail({
           <TabsContent value="payments" className="mt-3">
             <PaymentLedger project={project} />
           </TabsContent>
-          <TabsContent value="ledger" className="mt-3">
-            <LifetimeLedger project={project} />
-          </TabsContent>
           <TabsContent value="edit" className="mt-3">
             <ProjectHeader project={project} />
           </TabsContent>
@@ -157,7 +178,7 @@ function LifetimeLedger({ project }: { project: Project }) {
   async function exportStatement() {
     setIsExporting(true)
     try {
-      const response = await fetch(`/api/projects/${project.id}/export-ledger`)
+      const response = await fetch(`/api/projects/${project.serverId ?? project.id}/export-ledger`)
       if (!response.ok) throw new Error("Export failed")
       const blob = await response.blob()
       const url = window.URL.createObjectURL(blob)
@@ -173,8 +194,7 @@ function LifetimeLedger({ project }: { project: Project }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-muted-foreground">Lifetime statement — every expense, transport cost and payment, in order.</p>
+      <div className="flex justify-end">
         <Button size="sm" variant="outline" onClick={exportStatement} disabled={isExporting || entries.length === 0}>
           <Download className="size-4" /> {isExporting ? "Exporting…" : "Export"}
         </Button>
@@ -437,7 +457,7 @@ function ExpenseLedger({ project }: { project: Project }) {
   async function exportExcel() {
     setIsExporting(true)
     try {
-      const response = await fetch(`/api/projects/${project.id}/export-expenses`)
+      const response = await fetch(`/api/projects/${project.serverId ?? project.id}/export-expenses`)
       if (!response.ok) throw new Error("Export failed")
       const blob = await response.blob()
       const url = window.URL.createObjectURL(blob)
