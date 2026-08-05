@@ -345,6 +345,81 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [syncPendingRecords])
 
+  const pullingRef = useRef(false)
+
+  // Pulls the latest properties/projects from the server and folds them in
+  // on top of whatever's already in memory. This is what makes a change
+  // made on one device — an add, edit, or delete — show up on another
+  // device without that other device needing a full app restart. Reuses
+  // the same merge logic as the initial bootstrap load, so any record this
+  // device still has queued to create (or a delete it's still retrying)
+  // is preserved rather than clobbered by the refresh.
+  const pullFromServer = useCallback(async () => {
+    if (pullingRef.current) return
+    pullingRef.current = true
+    try {
+      const [projectsRes, propertiesRes] = await Promise.all([
+        fetch("/api/projects").catch(() => null),
+        fetch("/api/properties").catch(() => null),
+      ])
+
+      if (projectsRes?.ok) {
+        const json = await projectsRes.json()
+        if (Array.isArray(json.projects)) {
+          let projects = mergeUnsyncedIntoServerProjects(json.projects, dataRef.current.projects)
+          if (deletedProjectIdsRef.current.length > 0) {
+            projects = projects.filter((p) => !deletedProjectIdsRef.current.includes(apiProjectId(p)))
+          }
+          setData((d) => ({ ...d, projects }))
+        }
+      }
+
+      if (propertiesRes?.ok) {
+        const json = await propertiesRes.json()
+        if (Array.isArray(json.properties)) {
+          let properties = mergeUnsyncedIntoServerProperties(
+            json.properties.map((p: Property) => ({
+              ...p,
+              documents: Array.isArray(p.documents) ? p.documents : [],
+              tenants: Array.isArray(p.tenants) ? p.tenants.map((t: any) => normalizeTenant(t)) : [],
+            })),
+            dataRef.current.properties,
+          )
+          if (deletedPropertyIdsRef.current.length > 0) {
+            properties = properties.filter((p) => !deletedPropertyIdsRef.current.includes(apiPropertyId(p)))
+          }
+          setData((d) => ({ ...d, properties }))
+        }
+      }
+    } catch {
+      /* offline / server unreachable — the next poll or focus event retries */
+    } finally {
+      pullingRef.current = false
+    }
+  }, [])
+
+  // Keep every open device in sync with each other: poll periodically while
+  // the tab/app is visible, and refresh immediately on regaining focus or
+  // visibility — that's the moment a change made on another device most
+  // needs to show up. Without this, each device only ever saw server data
+  // once, at its own app start.
+  useEffect(() => {
+    if (!ready) return
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") pullFromServer()
+    }, 20000)
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === "visible") pullFromServer()
+    }
+    window.addEventListener("focus", onFocusOrVisible)
+    document.addEventListener("visibilitychange", onFocusOrVisible)
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener("focus", onFocusOrVisible)
+      document.removeEventListener("visibilitychange", onFocusOrVisible)
+    }
+  }, [ready, pullFromServer])
+
   // Bootstrap: everything (properties + projects) is hydrated from the
   // shared server "database" so every device signed into Faisal/90851234
   // sees the exact same data — but any not-yet-synced offline records
@@ -752,17 +827,17 @@ function mergeUnsyncedIntoServerProperties(serverProperties: Property[], cachedP
     return { ...serverProperty, id: cached.id, serverId: cached.serverId }
   })
 
-  // Anything cached with no matching server record needs to be created.
-  // This also one-time-migrates properties that were already sitting in a
-  // device's local cache from before server sync existed at all: those use
-  // the old plain uid()-style id, which doesn't start with "local-" and so
-  // wouldn't otherwise be recognized as unsynced — reassigning a proper
-  // local id here (instead of relying on isPropertySynced's prefix check)
-  // routes them through the normal create-sync path exactly once.
-  const matchedIds = new Set(merged.map((p) => p.serverId ?? p.id))
-  const toCreate = cachedProperties
-    .filter((p) => !matchedIds.has(p.serverId ?? p.id))
-    .map((p) => (isPropertySynced(p) ? { ...p, id: localId(), serverId: undefined } : p))
+  // Only properties this device has NEVER had confirmed by the server
+  // (still on a "local-" id, created offline and not yet synced) get
+  // carried forward to be created. A property that WAS already synced but
+  // is missing from this fresh server pull was deleted — by this device or
+  // another — and must be dropped here, not recreated. The previous version
+  // of this function recreated ANY unmatched cached property, which meant a
+  // delete made on one device kept quietly reappearing (and even getting
+  // re-posted to the server as a "new" property) the next time any other
+  // device polled — that's the bug behind deletes not sticking across
+  // devices.
+  const toCreate = cachedProperties.filter((p) => !isPropertySynced(p))
 
   return [...toCreate, ...merged]
 }
